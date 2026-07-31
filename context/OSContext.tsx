@@ -301,6 +301,7 @@ interface OSContextType {
   // API Presets
   apiPresets: ApiPreset[];
   addApiPreset: (name: string, config: APIConfig) => void;
+  updateApiPreset: (id: string, patch: { name?: string; config?: Partial<APIConfig> }) => void;
   removeApiPreset: (id: string) => void;
 
   // 实时配置 (天气、新闻、Notion等)
@@ -2603,6 +2604,21 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
   };
   const saveModels = (models: string[]) => { setAvailableModels(models); localStorage.setItem('os_available_models', JSON.stringify(models)); };
   const addApiPreset = (name: string, config: APIConfig) => { setApiPresets(prev => { const next = [...prev, { id: Date.now().toString(), name, config }]; localStorage.setItem('os_api_presets', JSON.stringify(next)); return next; }); };
+  // 就地改预设：站点换域名 / key 失效 / 名字改了，都不该逼用户再建一个新预设。
+  // 只覆盖 patch 里给到的字段，其余（温度、stream 等）保持原样。
+  const updateApiPreset = (id: string, patch: { name?: string; config?: Partial<APIConfig> }) => {
+    setApiPresets(prev => {
+      const next = prev.map(p => p.id === id
+        ? {
+            ...p,
+            name: typeof patch.name === 'string' ? patch.name : p.name,
+            config: patch.config ? { ...p.config, ...patch.config } : p.config,
+          }
+        : p);
+      localStorage.setItem('os_api_presets', JSON.stringify(next));
+      return next;
+    });
+  };
   const removeApiPreset = (id: string) => { setApiPresets(prev => { const next = prev.filter(p => p.id !== id); localStorage.setItem('os_api_presets', JSON.stringify(next)); return next; }); };
   const savePresets = (presets: ApiPreset[]) => { setApiPresets(presets); localStorage.setItem('os_api_presets', JSON.stringify(presets)); };
   const addCharacter = async () => {
@@ -4303,6 +4319,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     setAvailableModels,
     apiPresets,
     addApiPreset,
+    updateApiPreset,
     removeApiPreset,
     realtimeConfig,
     updateRealtimeConfig,

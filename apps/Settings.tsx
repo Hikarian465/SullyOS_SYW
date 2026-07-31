@@ -342,11 +342,81 @@ const McpServersCard: React.FC<{ addToast: (msg: string, type?: any) => void }> 
     );
 };
 
+/**
+ * 预设的删除按钮：必须按住 PRESET_DELETE_HOLD_MS 才真的删。
+ * 之前是轻点即删，小叉叉又贴着预设名，误触一次就得把 URL/key 重敲一遍。
+ * 按住时红色圆圈从中心涨满作为进度提示；手指中途移开/抬起都算取消。
+ */
+const PRESET_DELETE_HOLD_MS = 700;
+
+const PresetDeleteButton: React.FC<{ label: string; onDelete: () => void; onTooShort: () => void }> = ({ label, onDelete, onTooShort }) => {
+    const [holding, setHolding] = useState(false);
+    const timerRef = useRef<number | null>(null);
+
+    const clearTimer = () => {
+        if (timerRef.current !== null) {
+            window.clearTimeout(timerRef.current);
+            timerRef.current = null;
+        }
+    };
+    useEffect(() => clearTimer, []);
+
+    const handleDown = (e: React.PointerEvent<HTMLButtonElement>) => {
+        e.preventDefault();
+        e.stopPropagation();
+        // 触摸指针默认隐式捕获在按钮上，放开捕获才能让 pointerleave（手指滑走）正常触发取消
+        try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* 不支持就算了 */ }
+        clearTimer();
+        setHolding(true);
+        timerRef.current = window.setTimeout(() => {
+            timerRef.current = null;
+            setHolding(false);
+            try { navigator.vibrate?.(30); } catch { /* 桌面/iOS 没有震动 */ }
+            onDelete();
+        }, PRESET_DELETE_HOLD_MS);
+    };
+
+    const handleUp = (e: React.PointerEvent<HTMLButtonElement>) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const pending = timerRef.current !== null;
+        clearTimer();
+        setHolding(false);
+        if (pending) onTooShort();   // 松太早 → 提示要长按，不删
+    };
+
+    const handleCancel = () => {
+        clearTimer();
+        setHolding(false);
+    };
+
+    return (
+        <button
+            type="button"
+            aria-label={`长按删除预设 ${label}`}
+            title="长按删除"
+            onPointerDown={handleDown}
+            onPointerUp={handleUp}
+            onPointerLeave={handleCancel}
+            onPointerCancel={handleCancel}
+            onContextMenu={e => e.preventDefault()}
+            onClick={e => { e.preventDefault(); e.stopPropagation(); }}
+            className="relative overflow-hidden p-1 rounded-full text-slate-300 hover:text-red-400 transition-colors select-none touch-none"
+            style={{ WebkitTouchCallout: 'none' }}   // iOS 长按不弹「拷贝/查找」菜单
+        >
+            <span
+                className={`absolute inset-0 rounded-full bg-red-400 ease-linear transition-transform ${holding ? 'scale-100 duration-700' : 'scale-0 duration-150'}`}
+            />
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={`relative w-3 h-3 transition-colors ${holding ? 'text-white' : ''}`}><path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z" /></svg>
+        </button>
+    );
+};
+
 const Settings: React.FC = () => {
   const {
       apiConfig, updateApiConfig, closeApp, availableModels, setAvailableModels,
       exportSystem, importSystem, addToast, showError, resetSystem,
-      apiPresets, addApiPreset, removeApiPreset,
+      apiPresets, addApiPreset, updateApiPreset, removeApiPreset,
       sysOperation, // Get progress state
       realtimeConfig, updateRealtimeConfig, // 实时感知配置
       cloudBackupConfig, updateCloudBackupConfig,
@@ -389,6 +459,15 @@ const Settings: React.FC = () => {
   const [showExportModal, setShowExportModal] = useState(false); // Used for completion now
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showPresetModal, setShowPresetModal] = useState(false);
+  // 就地编辑预设：editingPresetId 非空时编辑弹窗打开
+  const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
+  const [editPresetName, setEditPresetName] = useState('');
+  const [editPresetUrl, setEditPresetUrl] = useState('');
+  const [editPresetKey, setEditPresetKey] = useState('');
+  const [editPresetModel, setEditPresetModel] = useState('');
+  const [showEditPresetKey, setShowEditPresetKey] = useState(false);
+  // 最近一次「加载」的预设 —— 改的正好是它时，顺手把上面的表单也同步一下
+  const [loadedPresetId, setLoadedPresetId] = useState<string | null>(null);
   const [showApiCallLog, setShowApiCallLog] = useState(false);
   const [showRealtimeModal, setShowRealtimeModal] = useState(false);
   const [showMcpModal, setShowMcpModal] = useState(false);
@@ -688,7 +767,64 @@ const Settings: React.FC = () => {
       setLocalTemperature(typeof preset.config.temperature === 'number' ? preset.config.temperature : 0.85);
       // MiniMax / AceStep settings are NOT overwritten by presets — typically one user
       // has only one MiniMax / Replicate account regardless of which LLM preset they use.
+      setLoadedPresetId(preset.id);
       addToast(`已加载配置: ${preset.name}`, 'info');
+  };
+
+  const openEditPreset = (preset: typeof apiPresets[0]) => {
+      setEditingPresetId(preset.id);
+      setEditPresetName(preset.name);
+      setEditPresetUrl(preset.config.baseUrl || '');
+      setEditPresetKey(preset.config.apiKey || '');
+      setEditPresetModel(preset.config.model || '');
+      setShowEditPresetKey(false);
+  };
+
+  const closeEditPreset = () => {
+      setEditingPresetId(null);
+      setShowEditPresetKey(false);
+  };
+
+  // 把上面表单里正在用的 URL/Key/Model 抄进编辑框 —— 「我已经在上面改好了，直接存回这个预设」
+  const fillEditFromCurrent = () => {
+      setEditPresetUrl(localUrl);
+      setEditPresetKey(localKey);
+      setEditPresetModel(localModel);
+      addToast('已填入当前配置', 'info');
+  };
+
+  const handleUpdatePreset = () => {
+      if (!editingPresetId) return;
+      const name = editPresetName.trim();
+      if (!name) {
+          addToast('请输入预设名称', 'error');
+          return;
+      }
+      updateApiPreset(editingPresetId, {
+          name,
+          config: {
+              baseUrl: editPresetUrl.trim(),
+              apiKey: editPresetKey.trim(),
+              model: editPresetModel.trim(),
+          },
+      });
+      // 改的就是当前加载着的这个预设 → 顺手同步上方表单，省得用户再点一次预设名
+      if (loadedPresetId === editingPresetId) {
+          setLocalUrl(editPresetUrl.trim());
+          setLocalKey(editPresetKey.trim());
+          setLocalModel(editPresetModel.trim());
+          addToast('预设已更新，已同步到上方（记得点「保存配置」生效）', 'success');
+      } else {
+          addToast('预设已更新', 'success');
+      }
+      closeEditPreset();
+  };
+
+  const handleDeletePreset = (preset: typeof apiPresets[0]) => {
+      removeApiPreset(preset.id);
+      if (loadedPresetId === preset.id) setLoadedPresetId(null);
+      if (editingPresetId === preset.id) closeEditPreset();
+      addToast(`已删除预设: ${preset.name}`, 'info');
   };
 
   const handleSavePreset = () => {
@@ -1533,14 +1669,28 @@ const Settings: React.FC = () => {
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 block pl-1">我的预设 (Presets)</label>
                     <div className="flex gap-2 flex-wrap">
                         {apiPresets.map(preset => (
-                            <div key={preset.id} className="flex items-center bg-white border border-slate-200 rounded-lg pl-3 pr-1 py-1 shadow-sm">
-                                <span onClick={() => loadPreset(preset)} className="text-xs font-medium text-slate-600 cursor-pointer hover:text-primary mr-2">{preset.name}</span>
-                                <button onClick={() => removeApiPreset(preset.id)} className="p-1 rounded-full text-slate-300 hover:bg-red-50 hover:text-red-400 transition-colors">
-                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3"><path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z" /></svg>
+                            <div key={preset.id} className={`flex items-center bg-white border rounded-lg pl-3 pr-0.5 py-1 shadow-sm ${loadedPresetId === preset.id ? 'border-primary/50' : 'border-slate-200'}`}>
+                                <span onClick={() => loadPreset(preset)} className="text-xs font-medium text-slate-600 cursor-pointer hover:text-primary mr-1.5">{preset.name}</span>
+                                <button
+                                    type="button"
+                                    onClick={() => openEditPreset(preset)}
+                                    aria-label={`编辑预设 ${preset.name}`}
+                                    title="编辑 URL / Key / 名称"
+                                    className="p-1 rounded-full text-slate-300 hover:bg-slate-100 hover:text-primary transition-colors"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3"><path d="M13.586 3.586a2 2 0 1 1 2.828 2.828l-.793.793-2.828-2.828.793-.793ZM11.379 5.793 3 14.172V17h2.828l8.38-8.379-2.83-2.828Z" /></svg>
                                 </button>
+                                <PresetDeleteButton
+                                    label={preset.name}
+                                    onDelete={() => handleDeletePreset(preset)}
+                                    onTooShort={() => addToast('长按小叉叉才会删除，防误触', 'info')}
+                                />
                             </div>
                         ))}
                     </div>
+                    <p className="text-[9px] text-slate-300 mt-1.5 pl-1 leading-relaxed">
+                        点名字加载 · 点铅笔改 URL / Key / 名称 · <b>长按</b>小叉叉才删除
+                    </p>
                 </div>
             )}
             
@@ -2701,6 +2851,47 @@ const Settings: React.FC = () => {
           <div className="space-y-2">
               <label className="text-[10px] font-bold text-slate-400 uppercase">预设名称 (例如: DeepSeek)</label>
               <input value={newPresetName} onChange={e => setNewPresetName(e.target.value)} className="w-full bg-slate-100 rounded-xl px-4 py-3 text-sm focus:outline-primary" autoFocus placeholder="Name..." />
+          </div>
+      </Modal>
+
+      {/* 编辑已有预设：主副站换 URL、令牌失效换 Key、站点改名 —— 都不用再建一个新预设 */}
+      <Modal
+          isOpen={editingPresetId !== null}
+          title="编辑预设"
+          onClose={closeEditPreset}
+          footer={
+              <div className="flex gap-2 w-full">
+                  <button onClick={closeEditPreset} className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl active:scale-95 transition-transform">取消</button>
+                  <button onClick={handleUpdatePreset} className="flex-[2] py-3 bg-primary text-white font-bold rounded-2xl active:scale-95 transition-transform">保存修改</button>
+              </div>
+          }
+      >
+          <div className="space-y-3">
+              <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">名称</label>
+                  <input value={editPresetName} onChange={e => setEditPresetName(e.target.value)} className="w-full bg-slate-100 rounded-xl px-4 py-3 text-sm focus:outline-primary" placeholder="例如: DeepSeek 主站" />
+              </div>
+              <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">URL</label>
+                  <input value={editPresetUrl} onChange={e => setEditPresetUrl(e.target.value)} className="w-full bg-slate-100 rounded-xl px-4 py-3 text-sm font-mono focus:outline-primary" placeholder="https://..." />
+              </div>
+              <div>
+                  <div className="flex justify-between items-center mb-1.5 pl-1">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Key</label>
+                      <button type="button" onClick={() => setShowEditPresetKey(v => !v)} className="text-[10px] text-primary font-bold">{showEditPresetKey ? '隐藏' : '显示'}</button>
+                  </div>
+                  <input type={showEditPresetKey ? 'text' : 'password'} value={editPresetKey} onChange={e => setEditPresetKey(e.target.value)} className="w-full bg-slate-100 rounded-xl px-4 py-3 text-sm font-mono focus:outline-primary" placeholder="sk-..." />
+              </div>
+              <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">Model</label>
+                  <input value={editPresetModel} onChange={e => setEditPresetModel(e.target.value)} className="w-full bg-slate-100 rounded-xl px-4 py-3 text-sm font-mono focus:outline-primary" placeholder="gpt-4o-mini" />
+              </div>
+              <button type="button" onClick={fillEditFromCurrent} className="w-full py-2.5 bg-slate-100 text-slate-500 text-xs font-bold rounded-xl active:scale-95 transition-transform">
+                  用上方当前配置填入
+              </button>
+              <p className="text-[10px] text-slate-400 leading-relaxed">
+                  只改这个预设本身。流式、温度等其他项保持原样；要真正切换到这套配置，保存后点一下预设名再点「保存配置」。
+              </p>
           </div>
       </Modal>
 
