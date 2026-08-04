@@ -421,6 +421,9 @@ const processInboxMessageWithPostProcessing = async (
       activeMsg2: {
         messageId: message.messageId,
         taskId: message.taskId,
+        taskUuid: message.taskUuid,
+        occurrenceMs: message.occurrenceMs,
+        recurrenceType: message.recurrenceType,
         messageType: message.messageType,
         messageSubtype: message.messageSubtype,
         avatarUrl: message.avatarUrl,
@@ -1272,6 +1275,9 @@ const flushInboxToChatImpl = async () => {
             activeMsg2: {
               messageId: message.messageId,
               taskId: message.taskId,
+              taskUuid: message.taskUuid,
+              occurrenceMs: message.occurrenceMs,
+              recurrenceType: message.recurrenceType,
               messageType: message.messageType,
               messageSubtype: message.messageSubtype,
               avatarUrl: message.avatarUrl,

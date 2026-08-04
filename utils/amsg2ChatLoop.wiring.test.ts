@@ -54,3 +54,16 @@ describe('工具循环的消息起点', () => {
     expect(src).toMatch(/textLoopMessages = \[\.\.\.baseReqBody\.messages\]/);
   });
 });
+
+describe('不支持原生 tools 的 API 兼容', () => {
+  it('首轮 4xx 降级条件包含 AMSG2，而不只包含 MCP', () => {
+    expect(src).toContain('(payload.flags.mcpChatActive || amsg2ToolsInjected)');
+    expect(src).toContain('buildMcpRejectedToolsFallbackBody');
+  });
+
+  it('正文假调用会真实执行、剥离并续写正常回复', () => {
+    expect(src).toContain('extractAmsg2TextToolCalls(contentNow)');
+    expect(src).toContain('await runAmsg2ToolCall(null, call.name, call.args)');
+    expect(src).toContain('stripAmsg2TextToolCalls(finalContent, leftovers)');
+  });
+});

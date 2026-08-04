@@ -48,6 +48,7 @@ import { resolveCharTimeZone } from '../utils/timezone';
 import { AMSG2_SUPPRESSED_TRACE } from '../utils/amsg2InstantConflict';
 import { appendInstantTraceEntry } from '../utils/instantTraceLog';
 import { AMSG2_TOOLS, AMSG2_TOOL_NAMES, createAmsg2ToolSession, executeAmsg2Tool, isAmsg2GlobalReady } from '../utils/amsg2ToolBridge';
+import { extractAmsg2TextToolCalls, stripAmsg2TextToolCalls } from '../utils/amsg2TextToolFallback';
 import { shouldSendThinkingParams } from '../utils/thinkingGate';
 import { routeMiniAppToolCall } from '../utils/miniAppToolRoute';
 import { applyEmotionEvalRaw, extractAssistantText } from '../utils/emotionApply';
@@ -730,7 +731,7 @@ export const useChatAI = ({
         const amsg2CreatedThisTurn = new Set<string>();
         // amsg2 工具在三个工具循环（麦当劳 / 瑞幸 / 通用）里都可能出现，执行方式完全一样，
         // 只有各自的 loopMessages 不同。
-        const runAmsg2ToolCall = async (tc: any, fname: string, args: any, loopMessages: any[]) => {
+        const runAmsg2ToolCall = async (tc: any, fname: string, args: any, loopMessages?: any[]) => {
             setSearchStatus(`正在执行：${fname}...`);
             const taskUuidsBefore = new Set(
                 (amsg2Session.getConfig()?.tasks ?? []).map((t) => t.taskUuid),
@@ -742,8 +743,9 @@ export const useChatAI = ({
                 if (!taskUuidsBefore.has(task.taskUuid)) amsg2CreatedThisTurn.add(task.taskUuid);
             }
             // 带上 name：Gemini 兼容层要求工具结果的 name 非空，缺了会被判 INVALID_ARGUMENT。
-            loopMessages.push(buildToolResultMessage(tc, result) as any);
+            if (loopMessages) loopMessages.push(buildToolResultMessage(tc, result) as any);
             setSearchStatus('');
+            return result;
         };
 
         try {
@@ -1196,15 +1198,15 @@ export const useChatAI = ({
                     body: JSON.stringify({ ...baseReqBody, messages: withAmsg2TaskContext(baseReqBody.messages) })
                 }, 2, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: '聊天回复' }, streamHooks);
             } catch (e) {
-                // 仅通用 MCP、且没有和其他工具模式混用时降级。部分 OpenAI 兼容中转
-                // 会对携带 tools 的请求直接回 4xx，而不是忽略参数；去掉 tools 后让
-                // 现有正文假调用容错接手。真实鉴权失败会在这次重试中再次抛出原样错误。
-                const mcpOnly = payload.flags.mcpChatActive
+                // 仅正文可用的 MCP / AMSG2、且没有和点单小程序工具混用时降级。部分
+                // OpenAI 兼容中转会对携带 tools 的请求直接回 4xx，而不是忽略参数；
+                // 去掉 tools 后让正文假调用容错接手。真实鉴权失败会在重试中再次原样抛出。
+                const textToolFallbackAllowed = (payload.flags.mcpChatActive || amsg2ToolsInjected)
                     && !payload.flags.luckinChatActive && !payload.flags.mcdActive && !payload.flags.luckinActive;
-                if (!mcpOnly || !baseReqBody.tools?.length || !shouldRetryMcpWithoutTools(e)) throw e;
-                console.warn('🔌 [MCP] 当前中转拒绝 tools 请求，降级为正文工具调用兼容模式');
-                // 这条路把 tools 全删了，角色排不了新任务；排程现状照样要带——它得知道
-                // 自己名下已经有哪些承诺，否则又会在正文里许一遍。
+                if (!textToolFallbackAllowed || !baseReqBody.tools?.length || !shouldRetryMcpWithoutTools(e)) throw e;
+                console.warn('🔌 [Tools] 当前中转拒绝 tools 请求，降级为正文工具调用兼容模式');
+                // tools 全删后仍带排程现状：角色得知道自己名下已经有哪些承诺，正文兜底
+                // 也能按下方签名输出 schedule_active_message({...})，随后由 3.6c 真实执行。
                 const fallbackBody = buildMcpRejectedToolsFallbackBody({
                     ...baseReqBody,
                     messages: withAmsg2TaskContext(baseReqBody.messages),
@@ -1212,7 +1214,7 @@ export const useChatAI = ({
                 data = await safeFetchJson(`${baseUrl}/chat/completions`, {
                     method: 'POST', headers,
                     body: JSON.stringify(fallbackBody)
-                }, 0, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: 'MCP tools 兼容重试' });
+                }, 0, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: 'tools 兼容重试' });
             }
             console.log(`⏱ [API call] ${Math.round(performance.now() - apiT0)}ms`);
             updateTokenUsage(data, historyMsgCount, 'initial');
@@ -1608,6 +1610,68 @@ export const useChatAI = ({
                         body: JSON.stringify(followBody)
                     });
                     updateTokenUsage(data, historyMsgCount, `mcp-text-${it + 1}`);
+                }
+                setSearchStatus('');
+            }
+
+            // 3.6c AMSG2 掉格式容错：部分中转不会返回 tool_calls，而会把工具调用写进正文，
+            // 甚至自创 `[schedule_active_message | 时间]` 这种简写。它看起来像安排成功，实际上
+            // 一次 Worker 请求都没发生。这里识别后代为执行，再让角色基于真实结果正常回话。
+            if (amsg2ToolsInjected) {
+                const MAX_AMSG2_TEXT_LOOPS = 3;
+                const executedSig = new Set<string>();
+                let textLoopMessages: any[] | null = null;
+                let lastResults: string[] = [];
+                for (let it = 0; it < MAX_AMSG2_TEXT_LOOPS; it++) {
+                    const contentNow: string = data.choices?.[0]?.message?.content || '';
+                    const calls = extractAmsg2TextToolCalls(contentNow)
+                        .filter((call) => {
+                            try { return !executedSig.has(`${call.name}|${JSON.stringify(call.args)}`); }
+                            catch { return true; }
+                        })
+                        .slice(0, 3);
+                    if (!calls.length) break;
+
+                    console.warn(`[AMSG2] 检测到 ${calls.length} 个正文假工具调用，代为执行：`, calls.map((c) => c.name).join(', '));
+                    const results: string[] = [];
+                    for (const call of calls) {
+                        try { executedSig.add(`${call.name}|${JSON.stringify(call.args)}`); } catch { /* ignore */ }
+                        results.push(await runAmsg2ToolCall(null, call.name, call.args));
+                    }
+                    lastResults = results;
+
+                    if (!textLoopMessages) textLoopMessages = [...baseReqBody.messages];
+                    const visibleLeadIn = stripAmsg2TextToolCalls(contentNow, calls);
+                    textLoopMessages.push({
+                        role: 'assistant',
+                        content: visibleLeadIn || '(正在使用主动消息工具)',
+                    });
+                    textLoopMessages.push({
+                        role: 'user',
+                        content: `[系统消息：你刚才把主动消息工具调用写成了聊天文字，系统现已代为真实执行。\n${results.join('\n')}\n请依据真实结果继续用角色语气回复。禁止再输出工具名、参数、方括号工具格式或声称未实际完成的操作。]`,
+                    });
+                    setSearchStatus('正在整理主动消息排程结果...');
+                    const followBody = buildMcpTextFallbackBody(baseReqBody, withAmsg2TaskContext(textLoopMessages));
+                    data = await safeFetchJson(`${baseUrl}/chat/completions`, {
+                        method: 'POST', headers,
+                        body: JSON.stringify(followBody),
+                    });
+                    updateTokenUsage(data, historyMsgCount, `amsg2-text-${it + 1}`);
+                }
+
+                // 连续三次仍掉格式时也绝不能把假成功气泡落给用户。保留普通正文；如果只剩
+                // 工具语法，就用真实执行结果兜底，至少状态和编号都是真的。
+                const finalContent: string = data.choices?.[0]?.message?.content || '';
+                const leftovers = extractAmsg2TextToolCalls(finalContent);
+                if (leftovers.length) {
+                    const cleaned = stripAmsg2TextToolCalls(finalContent, leftovers);
+                    const factualFallback = lastResults
+                        .map((result) => result.split('\n[系统:')[0].trim())
+                        .filter(Boolean)
+                        .join('\n');
+                    if (data.choices?.[0]?.message) {
+                        data.choices[0].message.content = cleaned || factualFallback || '主动消息工具没有返回可展示的结果。';
+                    }
                 }
                 setSearchStatus('');
             }

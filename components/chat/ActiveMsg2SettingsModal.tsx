@@ -9,6 +9,7 @@ import {
   APIConfig,
   CharacterProfile,
   GroupProfile,
+  Message,
   RealtimeConfig,
   UserProfile,
 } from '../../types';
@@ -17,6 +18,7 @@ import { ActiveMsgStore } from '../../utils/activeMsgStore';
 import { type AmsgLastSkip, describeLastSkip } from '../../utils/amsgFirePack';
 import { buildUserCancelledNotices } from '../../utils/amsg2TaskContext';
 import { trackEvent } from '../../utils/analytics';
+import { DB } from '../../utils/db';
 import {
   applyRemoteTaskDelta,
   applyScheduledTask,
@@ -62,6 +64,39 @@ interface ActiveMsg2SettingsModalProps {
   ) => void;
   addToast: (message: string, type?: 'success' | 'error' | 'info') => void;
 }
+
+interface ActiveMsg2DeliveryEvent {
+  key: string;
+  messageId?: string;
+  taskUuid?: string;
+  taskId?: number | string;
+  sentAt?: number | string;
+  receivedAt: number;
+  occurrenceMs?: number;
+}
+
+/** 一次主动消息可能经后处理拆成多个气泡；记录页按 messageId 合并成一次送达。 */
+const buildDeliveryEvents = (messages: Message[]): ActiveMsg2DeliveryEvent[] => {
+  const seen = new Set<string>();
+  const events: ActiveMsg2DeliveryEvent[] = [];
+  for (const message of [...messages].reverse()) {
+    const meta = message.metadata?.activeMsg2;
+    if (!meta) continue;
+    const key = String(meta.messageId || meta.taskUuid || `${meta.taskId || 'unknown'}:${message.timestamp}`);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    events.push({
+      key,
+      messageId: meta.messageId,
+      taskUuid: meta.taskUuid,
+      taskId: meta.taskId,
+      sentAt: meta.sentAt,
+      receivedAt: Number(meta.receivedAt) || message.timestamp,
+      occurrenceMs: Number(meta.occurrenceMs) || undefined,
+    });
+  }
+  return events.slice(0, 30);
+};
 
 const MODE_OPTIONS = [
   { id: 'fixed', label: '固定', desc: '到点直接发你写好的内容' },
@@ -122,6 +157,10 @@ const ActiveMsg2SettingsModal: React.FC<ActiveMsg2SettingsModalProps> = ({
   }> | null>(null);
   // 防穿帮闸最近一次跳过的记录（worker 写的）。null = 没有记录 / 没读到。
   const [lastSkip, setLastSkip] = useState<AmsgLastSkip | null>(null);
+  const [activeTab, setActiveTab] = useState<'tasks' | 'history'>('tasks');
+  const [deliveryHistory, setDeliveryHistory] = useState<ActiveMsg2DeliveryEvent[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [statusRefreshSeq, setStatusRefreshSeq] = useState(0);
 
   // 表单值重置：面板打开或切换编辑对象时，用被编辑任务的字段填表单（新建则填默认值）。
   // 角色级共享设置（maxTokens / 单独 API）始终跟随保存值。
@@ -160,6 +199,15 @@ const ActiveMsg2SettingsModal: React.FC<ActiveMsg2SettingsModalProps> = ({
     if (!isOpen) return;
     setKnownRemoteUuids(null);
     setRemoteTaskInfo(null);
+    setHistoryLoading(true);
+
+    void DB.getRecentMessagesByCharIdAndSource(char.id, 'active_msg_2', 100)
+      .then((messages) => setDeliveryHistory(buildDeliveryEvents(messages)))
+      .catch((error) => {
+        console.warn('[ActiveMsg2Modal] 读取送达记录失败', error);
+        setDeliveryHistory([]);
+      })
+      .finally(() => setHistoryLoading(false));
 
     void (async () => {
       const globalConfig = await ActiveMsgClient.getGlobalConfig();
@@ -214,7 +262,7 @@ const ActiveMsg2SettingsModal: React.FC<ActiveMsg2SettingsModalProps> = ({
     // char.activeMsg2Config 只在函数体里读当前值当探针，不进依赖——清理落盘会改它，
     // 进了依赖就是「清理 → 重跑 → 再清理」的自激循环。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, char.id]);
+  }, [isOpen, char.id, statusRefreshSeq]);
 
   /**
    * 拼一份要落盘的 config：
@@ -420,7 +468,11 @@ const ActiveMsg2SettingsModal: React.FC<ActiveMsg2SettingsModalProps> = ({
       title="主动消息 2.0"
       onClose={onClose}
       footer={(
-        <>
+        activeTab === 'history' ? (
+          <button onClick={onClose} className="w-full py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl active:scale-95 transition-transform">
+            关闭
+          </button>
+        ) : <>
           <button onClick={onClose} className="flex-1 py-3 bg-slate-100 text-slate-500 font-bold rounded-2xl active:scale-95 transition-transform">
             取消
           </button>
@@ -434,6 +486,109 @@ const ActiveMsg2SettingsModal: React.FC<ActiveMsg2SettingsModalProps> = ({
         <p className="text-xs leading-relaxed text-slate-500">
           这是新的云端主动消息入口。它会把当前角色设定、最近聊天快照和推送订阅一起提交到主动消息标准服务里。长周期循环任务建议在剧情变化后重新保存一次，避免使用过旧的上下文。
         </p>
+
+        <div className="grid grid-cols-2 gap-2 rounded-2xl bg-slate-100 p-1">
+          <button
+            onClick={() => setActiveTab('tasks')}
+            className={`rounded-xl py-2 text-xs font-bold transition-colors ${activeTab === 'tasks' ? 'bg-white text-fuchsia-600 shadow-sm' : 'text-slate-400'}`}
+          >
+            排程设置
+          </button>
+          <button
+            onClick={() => setActiveTab('history')}
+            className={`rounded-xl py-2 text-xs font-bold transition-colors ${activeTab === 'history' ? 'bg-white text-fuchsia-600 shadow-sm' : 'text-slate-400'}`}
+          >
+            运行记录
+          </button>
+        </div>
+
+        {activeTab === 'history' ? (
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-fuchsia-100 bg-fuchsia-50 px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="font-bold text-slate-700">{char.name} 的主动消息记录</div>
+                  <div className="mt-1 text-xs text-fuchsia-600">{pushSummary || '正在检查手机推送通道...'}</div>
+                </div>
+                <button
+                  onClick={() => setStatusRefreshSeq((value) => value + 1)}
+                  className="shrink-0 rounded-xl bg-white px-3 py-2 text-xs font-bold text-fuchsia-600 shadow-sm"
+                >
+                  刷新
+                </button>
+              </div>
+            </div>
+
+            {lastSkip ? (
+              <div className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-700">
+                <div className="mb-1 font-bold">最近一次未发送</div>
+                {describeLastSkip(lastSkip, (ms) => formatTaskTime(new Date(ms).toISOString()))}
+              </div>
+            ) : null}
+
+            <div>
+              <div className="mb-2 flex items-center justify-between px-1">
+                <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">已部署任务（{tasks.length}）</label>
+                <span className="text-[10px] text-slate-400">创建成功才会出现在这里</span>
+              </div>
+              <div className="space-y-2">
+                {tasks.length ? tasks.map((task) => {
+                  const occurrenceMs = currentOccurrenceMs(task, now);
+                  const remoteInfo = remoteTaskInfo?.get(task.taskUuid);
+                  const remoteMissing = isRemoteMissingTask(task, knownRemoteUuids, now);
+                  const remoteErrorText = describeRemoteLastError(remoteInfo?.lastError, formatTaskTime);
+                  const deployed = knownRemoteUuids?.has(task.taskUuid);
+                  return (
+                    <div key={task.taskUuid} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs">
+                      <div className="font-bold text-slate-700">
+                        [{shortTaskId(task.taskUuid)}] {formatTaskTime(occurrenceMs ?? task.firstSendTime)}
+                      </div>
+                      <div className={`mt-1 font-medium ${deployed ? 'text-emerald-600' : remoteMissing ? 'text-slate-500' : 'text-amber-600'}`}>
+                        {deployed
+                          ? '● Worker 已部署，等待触发'
+                          : remoteMissing
+                            ? '○ Worker 已不存在；本机尚未找到送达记录'
+                            : '◌ 正在读取 Worker 状态'}
+                      </div>
+                      <div className="mt-1 text-slate-400">
+                        {describeRecurrence(task.recurrenceType)} · {describeTaskMode(task)} · {task.source === 'character' ? '角色创建' : '手动创建'}
+                      </div>
+                      {remoteErrorText ? <div className="mt-1 text-amber-600">⚠ {remoteErrorText}</div> : null}
+                      {task.lastError ? <div className="mt-1 text-red-500">⚠ {task.lastError}</div> : null}
+                    </div>
+                  );
+                }) : (
+                  <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-5 text-center text-xs text-slate-400">
+                    当前没有等待触发的任务。
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <div className="mb-2 flex items-center justify-between px-1">
+                <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">成功触发并写入聊天（{deliveryHistory.length}）</label>
+                <span className="text-[10px] text-slate-400">同一条多气泡只记一次</span>
+              </div>
+              <div className="space-y-2">
+                {deliveryHistory.length ? deliveryHistory.map((event) => (
+                  <div key={event.key} className="rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-xs">
+                    <div className="font-bold text-emerald-700">✓ 已触发并写入聊天</div>
+                    <div className="mt-1 text-slate-600">收到：{formatTaskTime(new Date(event.receivedAt).toISOString())}</div>
+                    {event.occurrenceMs ? <div className="mt-0.5 text-slate-400">计划：{formatTaskTime(new Date(event.occurrenceMs).toISOString())}</div> : null}
+                    <div className="mt-0.5 text-slate-400">
+                      任务 [{shortTaskId(String(event.taskUuid || event.taskId || event.messageId || '未知'))}]
+                    </div>
+                  </div>
+                )) : (
+                  <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-5 text-center text-xs leading-relaxed text-slate-400">
+                    {historyLoading ? '正在读取本机送达记录...' : '还没有找到成功写入聊天的主动消息。仅仅出现排程文字不算成功。'}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : <>
 
         <div className="flex items-center justify-between bg-fuchsia-50 border border-fuchsia-100 rounded-2xl p-4">
           <div>
@@ -647,6 +802,7 @@ const ActiveMsg2SettingsModal: React.FC<ActiveMsg2SettingsModalProps> = ({
             </div>
           </>
         ) : null}
+        </>}
       </div>
     </Modal>
   );
