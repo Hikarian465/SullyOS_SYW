@@ -6,10 +6,22 @@ describe('amsg2 正文工具调用兼容', () => {
     const raw = '收到，继续排查。\n[schedule_active_message | 2026-08-04 15:28:00]';
     expect(extractAmsg2TextToolCalls(raw)).toEqual([{
       name: 'schedule_active_message',
-      args: { send_at: '2026-08-04T15:28:00' },
+      args: { send_at: '2026-08-04T15:28:00', expire_policy: 'force' },
       matched: '[schedule_active_message | 2026-08-04 15:28:00]',
     }]);
     expect(stripAmsg2TextToolCalls(raw)).toBe('收到，继续排查。');
+  });
+
+  it('方括号简写可显式要求自动作废，完整 JSON 仍尊重原策略', () => {
+    expect(extractAmsg2TextToolCalls(
+      '[schedule_active_message | 2026-08-05 09:00:00 | expire]',
+    )[0].args).toEqual({
+      send_at: '2026-08-05T09:00:00',
+      expire_policy: 'expire',
+    });
+    expect(extractAmsg2TextToolCalls(
+      '[schedule_active_message | {"send_at":"2026-08-05T09:00:00","expire_policy":"expire"}]',
+    )[0].args).toEqual({ send_at: '2026-08-05T09:00:00', expire_policy: 'expire' });
   });
 
   it('识别标准 JSON 正文调用', () => {

@@ -43,7 +43,15 @@ const parsePipeArgs = (name: string, raw: string): Record<string, unknown> => {
   if (text.startsWith('{')) return parseObject(text) ?? {};
 
   if (name === 'schedule_active_message') {
-    return { send_at: normalizeWallClock(text) };
+    // 这种极简格式已经只剩一个明确时刻，通常来自「三分钟后再找我」之类必须兑现的
+    // 具体约定。原始 function args 里的 expire_policy 被中转吞掉了；继续按执行器默认
+    // expire 会导致用户在排程后多说一句话，任务到点就被防穿帮闸消费掉。简写因此默认
+    // force；模型若输出完整 JSON，仍完全尊重 JSON 里的 expire_policy。
+    const [sendAt = '', policy = ''] = text.split('|').map((part) => part.trim());
+    return {
+      send_at: normalizeWallClock(sendAt),
+      expire_policy: policy === 'expire' ? 'expire' : 'force',
+    };
   }
   if (name === 'cancel_active_message') {
     return { task_id: text };
