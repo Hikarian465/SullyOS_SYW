@@ -41,6 +41,19 @@ describe('打脏入口接线（保存后调 markAmsgStateDirty）', () => {
     }
   });
 
+  it('Chat：用户只发送、不触发普通回复，也会立即上传最新 fire_pack', () => {
+    const src = read('../apps/Chat.tsx');
+    const fn = sliceBetween(src, 'const handleSendText = async', '// 用户点开「收到的转账」卡');
+    const saveAt = fn.indexOf('const savedUserMsgId = await DB.saveMessage(msgPayload);');
+    const flushAt = fn.indexOf("await flushAmsgState('user-message-saved');");
+    const instantAt = fn.indexOf('const instantCfg = loadInstantConfig();');
+
+    expect(src).toContain("import { flushAmsgState, markAmsgStateDirty");
+    expect(saveAt).toBeGreaterThan(-1);
+    expect(flushAt).toBeGreaterThan(saveAt);
+    expect(instantAt).toBeGreaterThan(flushAt);
+  });
+
   it('OSContext 启动路径接了底账补传 resumePendingAmsgStateSync', () => {
     expect(read('../context/OSContext.tsx')).toContain('resumePendingAmsgStateSync({');
   });
