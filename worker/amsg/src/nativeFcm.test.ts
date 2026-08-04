@@ -23,9 +23,19 @@ describe('AMSG2 native FCM transport', () => {
     }));
     expect(request.message.notification).toEqual({ title: 'Sully', body: '你好' });
     expect(request.message.data.amsgHasBody).toBe('1');
+    expect(request.message.data.amsgBody).toBe(request.message.notification.body);
     const portable = JSON.parse(request.message.data.amsgPayload);
     expect(portable.message).toBeUndefined();
     expect(portable.metadata.charId).toBe('char-1');
   });
-});
 
+  it('drops the optional replay copy before rejecting an otherwise valid large payload', () => {
+    const message = 'x'.repeat(1800);
+    const request = buildFcmMessage('token', JSON.stringify({
+      messageId: 'm-large', message, contactName: 'Sully',
+      metadata: { charId: 'char-1', padding: 'y'.repeat(900) },
+    }));
+    expect(request.message.notification.body).toBe(message);
+    expect(request.message.data.amsgBody).toBeUndefined();
+  });
+});

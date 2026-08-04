@@ -107,6 +107,9 @@ export const buildFcmMessage = (token: string, rawPayload: string) => {
       data: {
         amsgPayload: JSON.stringify(portable),
         amsgHasBody: actualBody ? '1' : '0',
+        // A notification tap on Android exposes only Intent data to Capacitor.
+        // Keep a replay copy when the FCM size budget allows it.
+        ...(actualBody ? { amsgBody: actualBody } : {}),
       },
       android: {
         priority: 'high',
@@ -118,7 +121,11 @@ export const buildFcmMessage = (token: string, rawPayload: string) => {
       },
     },
   };
-  const bytes = utf8.encode(JSON.stringify(result)).byteLength;
+  let bytes = utf8.encode(JSON.stringify(result)).byteLength;
+  if (bytes > 4000 && 'amsgBody' in result.message.data) {
+    delete (result.message.data as Record<string, string>).amsgBody;
+    bytes = utf8.encode(JSON.stringify(result)).byteLength;
+  }
   if (bytes > 4000) throw new Error(`FCM_PAYLOAD_TOO_LARGE: ${bytes} bytes（安全上限 4000）`);
   return result;
 };
@@ -158,4 +165,3 @@ export const isFcmConfigured = (env: NativeFcmEnv): boolean => Boolean(
   && env.FCM_SERVICE_ACCOUNT_EMAIL?.trim()
   && env.FCM_SERVICE_ACCOUNT_PRIVATE_KEY?.trim(),
 );
-

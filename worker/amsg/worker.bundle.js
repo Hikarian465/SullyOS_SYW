@@ -8426,7 +8426,10 @@ var buildFcmMessage = (token, rawPayload) => {
       },
       data: {
         amsgPayload: JSON.stringify(portable),
-        amsgHasBody: actualBody ? "1" : "0"
+        amsgHasBody: actualBody ? "1" : "0",
+        // A notification tap on Android exposes only Intent data to Capacitor.
+        // Keep a replay copy when the FCM size budget allows it.
+        ...actualBody ? { amsgBody: actualBody } : {}
       },
       android: {
         priority: "high",
@@ -8438,7 +8441,11 @@ var buildFcmMessage = (token, rawPayload) => {
       }
     }
   };
-  const bytes = utf83.encode(JSON.stringify(result)).byteLength;
+  let bytes = utf83.encode(JSON.stringify(result)).byteLength;
+  if (bytes > 4e3 && "amsgBody" in result.message.data) {
+    delete result.message.data.amsgBody;
+    bytes = utf83.encode(JSON.stringify(result)).byteLength;
+  }
   if (bytes > 4e3) throw new Error(`FCM_PAYLOAD_TOO_LARGE: ${bytes} bytes\uFF08\u5B89\u5168\u4E0A\u9650 4000\uFF09`);
   return result;
 };

@@ -12,6 +12,7 @@ import {
 } from './activeMsgClient';
 import { ActiveMsgStore } from './activeMsgStore';
 import { flushInboxToChat } from './activeMsgRuntime';
+import { DB } from './db';
 
 const RECEIVED_IDS_KEY = 'amsg2_native_received_ids_v1';
 let initialized = false;
@@ -32,11 +33,26 @@ const rememberReceivedId = (messageId: string) => {
 export const decodeNativeAmsgPayload = (
   notification: Pick<PushNotificationSchema, 'body' | 'data'>,
 ): Record<string, any> | null => {
-  const raw = notification.data?.amsgPayload;
-  if (typeof raw !== 'string') return null;
+  const data = notification.data || {};
+  const raw = data.amsgPayload;
+  if (typeof raw !== 'string' && (!raw || typeof raw !== 'object')) return null;
   try {
-    const payload = JSON.parse(raw) as Record<string, any>;
-    payload.message = notification.data?.amsgHasBody === '1' ? String(notification.body || '') : '';
+    const payload = (typeof raw === 'string' ? JSON.parse(raw) : raw) as Record<string, any>;
+    const hasBody = data.amsgHasBody === '1' || data.amsgHasBody === 1 || data.amsgHasBody === true;
+    const recoveredBody = [
+      data.amsgBody,
+      notification.body,
+      // Capacitor's Android tap callback only exposes Intent extras. Firebase
+      // stores the visible notification body under this key in that callback.
+      data['gcm.n.body'],
+      data['gcm.notification.body'],
+      payload.message,
+      payload.body,
+    ].find((value) => typeof value === 'string' && value.length > 0);
+    // Do not acknowledge an AMSG content notification until its text can be
+    // reconstructed. A delivered-notification recovery pass can retry it.
+    if (hasBody && typeof recoveredBody !== 'string') return null;
+    payload.message = hasBody ? String(recoveredBody || '') : String(payload.message || payload.body || '');
     return payload;
   } catch { return null; }
 };
@@ -78,6 +94,39 @@ const ingestNotification = async (notification: PushNotificationSchema): Promise
   await flushInboxToChat();
 };
 
+export const recoverDeliveredNativeAmsg = async (notification: PushNotificationSchema): Promise<void> => {
+  if (decodeNativeAmsgPayload(notification)) {
+    await ingestNotification(notification);
+    return;
+  }
+
+  // Firebase keeps custom data on the notification's tap Intent, not on
+  // Notification.extras. When the user opens the app icon instead of tapping
+  // the notification, Capacitor can therefore return only title/body/tag.
+  const title = String(notification.title || '').trim();
+  const body = String(notification.body || '').trim();
+  const messageId = String(notification.tag || '').trim();
+  if (!title || !body || !messageId) return;
+
+  const characters = await DB.getAllCharacters();
+  const matches = characters.filter((character) => character.name?.trim() === title);
+  if (matches.length !== 1) return;
+
+  await ingestNotification({
+    ...notification,
+    data: {
+      ...(notification.data || {}),
+      amsgHasBody: '1',
+      amsgBody: body,
+      amsgPayload: JSON.stringify({
+        messageId,
+        contactName: title,
+        metadata: { charId: matches[0].id, recoveredFromDeliveredNotification: true },
+      }),
+    },
+  });
+};
+
 const registerToken = async (token: Token) => {
   const value = token.value?.trim();
   if (!value) return;
@@ -109,6 +158,13 @@ const ensureNativePushListeners = async (): Promise<void> => {
       }
     });
   });
+
+  // Notification messages received while Android has suspended/killed the
+  // WebView are displayed by the OS without firing a JavaScript receive event.
+  // Recover still-visible AMSG notifications whenever the app starts.
+  void PushNotifications.getDeliveredNotifications()
+    .then(({ notifications }) => Promise.all(notifications.map((notification) => recoverDeliveredNativeAmsg(notification))))
+    .catch((error) => console.info('[ActiveMsg:native] delivered notification recovery unavailable', error));
 };
 
 const waitForNativeToken = async (timeoutMs = 10_000): Promise<string | null> => {
