@@ -970,6 +970,51 @@ describe('ActiveMsgClient.registerPushSubscription（② 订阅按用户登记�
   });
 });
 
+describe('ActiveMsgClient Capacitor 原生 FCM 分流', () => {
+  const values = new Map<string, string>();
+  const localStorageStub = {
+    getItem: vi.fn((key: string) => values.get(key) ?? null),
+    setItem: vi.fn((key: string, value: string) => { values.set(key, value); }),
+    removeItem: vi.fn((key: string) => { values.delete(key); }),
+  };
+
+  beforeEach(() => {
+    values.clear();
+    vi.stubEnv('VITE_AMSG_NATIVE_PUSH', 'true');
+    vi.stubGlobal('localStorage', localStorageStub);
+    reiClient.init.mockReset().mockResolvedValue(undefined);
+    reiClient.putPushSubscription.mockReset().mockResolvedValue({ success: true });
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('WebView 没有 PushManager 也报告原生通道可用，不再误报缺少 Push API', async () => {
+    values.set('amsg2_fcm_permission_v1', 'granted');
+    values.set('amsg2_fcm_token_v1', 'native-token');
+
+    await expect(ActiveMsgClient.getPushStatus()).resolves.toMatchObject({
+      supported: true,
+      permission: 'granted',
+      hasSubscription: true,
+      channel: 'native',
+    });
+  });
+
+  it('开启推送时把已有 FCM token 登记为 fcm: endpoint，不碰浏览器订阅', async () => {
+    values.set('amsg2_fcm_permission_v1', 'granted');
+    values.set('amsg2_fcm_token_v1', 'native-token');
+    const ensureWebPush = vi.spyOn(ActiveMsgClient, 'ensurePushSubscription');
+
+    await ActiveMsgClient.registerPushSubscription();
+
+    expect(reiClient.putPushSubscription).toHaveBeenCalledWith({ endpoint: 'fcm:native-token' });
+    expect(ensureWebPush).not.toHaveBeenCalled();
+  });
+});
+
 // 回归守卫：换一台 worker 就是换一个空的 D1，而浏览器这侧的订阅一个字都没变——
 // SW 的 pushsubscriptionchange 不会响，refreshPushSubscriptionIfMarked 也就没有标记
 // 可消费。于是面板全绿、连接验证通过，worker 到点却读不到那份用户级订阅，直接抛

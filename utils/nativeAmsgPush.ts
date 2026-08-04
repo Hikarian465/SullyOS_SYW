@@ -5,12 +5,17 @@ import {
   type Token,
 } from '@capacitor/push-notifications';
 import type { ActiveMsg2InboxMessage } from '../types';
-import { ActiveMsgClient, NATIVE_PUSH_TOKEN_STORAGE_KEY } from './activeMsgClient';
+import {
+  ActiveMsgClient,
+  NATIVE_PUSH_PERMISSION_STORAGE_KEY,
+  NATIVE_PUSH_TOKEN_STORAGE_KEY,
+} from './activeMsgClient';
 import { ActiveMsgStore } from './activeMsgStore';
 import { flushInboxToChat } from './activeMsgRuntime';
 
 const RECEIVED_IDS_KEY = 'amsg2_native_received_ids_v1';
 let initialized = false;
+let listenersReady = false;
 
 const readReceivedIds = (): string[] => {
   try {
@@ -84,9 +89,9 @@ const registerToken = async (token: Token) => {
   }
 };
 
-export const initNativeAmsgPush = async (): Promise<void> => {
-  if (initialized) return;
-  initialized = true;
+const ensureNativePushListeners = async (): Promise<void> => {
+  if (listenersReady) return;
+  listenersReady = true;
   await PushNotifications.createChannel({
     id: 'amsg2', name: '主动消息', description: '角色主动消息与定时消息',
     importance: 5, visibility: 1, vibration: true,
@@ -104,10 +109,37 @@ export const initNativeAmsgPush = async (): Promise<void> => {
       }
     });
   });
-  const current = await PushNotifications.checkPermissions();
-  const permission = current.receive === 'prompt'
-    ? await PushNotifications.requestPermissions()
-    : current;
-  if (permission.receive === 'granted') await PushNotifications.register();
 };
 
+const waitForNativeToken = async (timeoutMs = 10_000): Promise<string | null> => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const token = localStorage.getItem(NATIVE_PUSH_TOKEN_STORAGE_KEY)?.trim();
+    if (token) return token;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return localStorage.getItem(NATIVE_PUSH_TOKEN_STORAGE_KEY)?.trim() || null;
+};
+
+export const requestNativeAmsgPushRegistration = async (): Promise<string | null> => {
+  await ensureNativePushListeners();
+  const current = await PushNotifications.checkPermissions();
+  const permission = current.receive === 'prompt' || current.receive === 'prompt-with-rationale'
+    ? await PushNotifications.requestPermissions()
+    : current;
+  localStorage.setItem(NATIVE_PUSH_PERMISSION_STORAGE_KEY, permission.receive);
+  if (permission.receive !== 'granted') return null;
+  const existing = localStorage.getItem(NATIVE_PUSH_TOKEN_STORAGE_KEY)?.trim();
+  if (existing) {
+    await registerToken({ value: existing });
+    return existing;
+  }
+  await PushNotifications.register();
+  return waitForNativeToken();
+};
+
+export const initNativeAmsgPush = async (): Promise<void> => {
+  if (initialized) return;
+  initialized = true;
+  await requestNativeAmsgPushRegistration();
+};

@@ -44,12 +44,17 @@ function readCommit(): string {
 
 const gitInfo = { branch: readBranch(), commit: readCommit() };
 const buildTime = formatBuildTimeUtc8();
-const isReleaseBranch = RELEASE_BRANCHES.has(gitInfo.branch);
-let showBuildBadge = !isReleaseBranch;
-if (process.env.VITE_HIDE_BUILD_BADGE === '1') showBuildBadge = false;
-if (process.env.VITE_SHOW_BUILD_BADGE === '1') showBuildBadge = true;
 
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  const isReleaseBranch = RELEASE_BRANCHES.has(gitInfo.branch);
+  // TIAO-Capacitor is a private release channel, not a dev preview. Its branch
+  // name is intentionally non-master, but the installed App must not show the
+  // fork/development badge.
+  let showBuildBadge = mode === 'capacitor' ? false : !isReleaseBranch;
+  if (process.env.VITE_HIDE_BUILD_BADGE === '1') showBuildBadge = false;
+  if (process.env.VITE_SHOW_BUILD_BADGE === '1') showBuildBadge = true;
+
+  return {
   plugins: [
     react(),
     {
@@ -146,4 +151,5 @@ export default defineConfig({
       }
     }
   }
+  };
 });

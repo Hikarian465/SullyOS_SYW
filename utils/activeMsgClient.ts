@@ -71,16 +71,24 @@ import {
 } from './pushSubscribeShared';
 
 export const NATIVE_PUSH_TOKEN_STORAGE_KEY = 'amsg2_fcm_token_v1';
+export const NATIVE_PUSH_PERMISSION_STORAGE_KEY = 'amsg2_fcm_permission_v1';
 const nativePushBuildEnabled = () => import.meta.env.VITE_AMSG_NATIVE_PUSH === 'true';
 const readNativePushToken = () => nativePushBuildEnabled() && typeof localStorage !== 'undefined'
   ? localStorage.getItem(NATIVE_PUSH_TOKEN_STORAGE_KEY)?.trim() || ''
   : '';
+const readNativePushPermission = (): NotificationPermission => {
+  if (!nativePushBuildEnabled() || typeof localStorage === 'undefined') return 'default';
+  const value = localStorage.getItem(NATIVE_PUSH_PERMISSION_STORAGE_KEY);
+  if (value === 'granted' || value === 'denied') return value;
+  return 'default';
+};
 
 export interface ActiveMsg2PushStatus {
   supported: boolean;
   permission: NotificationPermission | 'unsupported';
   hasSubscription: boolean;
   vapidConfigured: boolean;
+  channel?: 'web' | 'native';
   detail?: string;
 }
 
@@ -938,6 +946,24 @@ export const ActiveMsgClient = {
   async getPushStatus(): Promise<ActiveMsg2PushStatus> {
     const config = await ensureGlobalReady();
     const workerConfigured = Boolean(config.workerUrl.trim());
+    if (nativePushBuildEnabled()) {
+      const token = readNativePushToken();
+      const permission = readNativePushPermission();
+      return {
+        supported: true,
+        permission,
+        hasSubscription: Boolean(token),
+        vapidConfigured: workerConfigured,
+        channel: 'native',
+        detail: !workerConfigured
+          ? '请先填写 Worker 地址。'
+          : permission === 'denied'
+            ? '系统通知权限已关闭，请在手机的应用设置里允许通知。'
+            : !token
+              ? '原生 FCM 推送令牌尚未生成，点下面按钮重新申请。'
+              : '原生 FCM 推送已就绪。',
+      };
+    }
     // 能力检测与 instant push / proactive push 共用 describePushCapabilityGap：
     // 它会说清缺的是三件套里的哪一件，「不支持」这三个字用户拿着没法action。
     const capabilityGap = describePushCapabilityGap();
@@ -960,6 +986,7 @@ export const ActiveMsgClient = {
       permission: Notification.permission,
       hasSubscription: Boolean(subscription),
       vapidConfigured: workerConfigured,
+      channel: 'web',
       detail: !workerConfigured ? '请先填写 Worker 地址。' : undefined,
     };
   },
@@ -1010,6 +1037,24 @@ export const ActiveMsgClient = {
    * 一般也不会有人同时开着两台设备玩，真开了的话，「另一台不响了」就是正常现象。
    */
   async registerPushSubscription(): Promise<void> {
+    if (nativePushBuildEnabled()) {
+      let token = readNativePushToken();
+      if (!token) {
+        const { requestNativeAmsgPushRegistration } = await import('./nativeAmsgPush');
+        token = await requestNativeAmsgPushRegistration() || '';
+      }
+      if (!token) {
+        const denied = readNativePushPermission() === 'denied';
+        throw withFailKind(
+          new Error(denied
+            ? '手机系统没有授予通知权限，请到应用设置里允许通知后重试。'
+            : 'FCM 推送令牌还没有生成，请稍后再点一次。'),
+          denied ? '权限被拒' : '订阅失败',
+        );
+      }
+      await this.registerNativePushToken(token);
+      return;
+    }
     const config = await ensureWorkerReady();
     const client = await initializeClient(config);
     const subscription = await this.ensurePushSubscription();
@@ -1054,6 +1099,13 @@ export const ActiveMsgClient = {
    * 按钮要治的病，不能自己再犯一遍。
    */
   async resetPushSubscription(): Promise<void> {
+    if (nativePushBuildEnabled()) {
+      const config = await ensureWorkerReady();
+      const client = await initializeClient(config);
+      try { await client.deletePushSubscription(); } catch { /* 下面会覆盖写 */ }
+      await this.registerPushSubscription();
+      return;
+    }
     const config = await requirePushReady();
     const client = await initializeClient(config);
 
@@ -1082,6 +1134,10 @@ export const ActiveMsgClient = {
    * 的 D1 里、跟 SW 无关，不用像 proactive-push 那样重新推排程回去。
    */
   async deepResetPushSubscription(): Promise<void> {
+    if (nativePushBuildEnabled()) {
+      await this.resetPushSubscription();
+      return;
+    }
     const config = await requirePushReady();
     const client = await initializeClient(config);
 
@@ -1128,6 +1184,16 @@ export const ActiveMsgClient = {
    * 返回值只为单测断言：'registered' 补了 / 'skipped' 条件不满足 / 'failed' 补失败了。
    */
   async reconcilePushSubscription(): Promise<'registered' | 'skipped' | 'failed'> {
+    if (nativePushBuildEnabled()) {
+      if (!readNativePushToken()) return 'skipped';
+      try {
+        await this.registerPushSubscription();
+        return 'registered';
+      } catch (error) {
+        console.warn('[ActiveMsg] 连接后补登记原生推送令牌失败', error);
+        return 'failed';
+      }
+    }
     try {
       if (describePushCapabilityGap()) return 'skipped';
       if (Notification.permission !== 'granted') return 'skipped';
