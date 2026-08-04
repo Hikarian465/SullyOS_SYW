@@ -680,6 +680,14 @@ describe('buildFirePack 的时区参照系与模板（①）', () => {
     expect(template).toContain('只有一句话明显更自然时');
   });
 
+  it('排程之后新落库的用户消息会进入下一次 fire_pack', async () => {
+    vi.mocked(ChatPrompts.buildMessageHistory).mockReturnValue({
+      apiMessages: [{ role: 'user', content: '密码是我也爱你' }],
+    } as any);
+    const { template } = await pack(baseChar());
+    expect(template).toContain('【小明】\n密码是我也爱你');
+  });
+
   // 回归守卫：timeAwarenessEnabled=false 的架空角色在前台连今天几号都读不到
   // （buildTimeAwarenessBlock 直接返回空串），主动消息这边却精确报出年月日 + 星期。
   // 同一个开关不能有两套行为。

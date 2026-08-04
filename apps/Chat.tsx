@@ -57,7 +57,7 @@ import WhiteboxSoundEditor from '../components/chat/WhiteboxSoundEditor';
 import { normalizeTranslationLangLabel, isTranslationLangPreset } from '../utils/translationLang';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 import { trackEvent, noteMessageSent, presetOrCustom } from '../utils/analytics';
-import { markAmsgStateDirty, markAmsgStateDirtyForAll } from '../utils/amsgStateSync';
+import { flushAmsgState, markAmsgStateDirty, markAmsgStateDirtyForAll } from '../utils/amsgStateSync';
 import {
     CONTEXT_RANGE_POLICY_VERSION,
     computeContextRangeSnapshot,
@@ -1190,6 +1190,12 @@ const Chat: React.FC = () => {
 
         await reloadMessages(visibleCountRef.current);
         setShowPanel('none');
+
+        // 用户只把话发进聊天、并不立刻触发普通 AI 回复时，也必须让到点任务读到这句话。
+        // 先等上面的链接/卡片替换全部落库，再立即重建并上传 fire_pack；否则只靠
+        // triggerAI/finally，同「先约时间、随后告诉密码、静候到点」这条路径永远碰不到同步点。
+        markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
+        await flushAmsgState('user-message-saved');
 
         // Instant Push 模式：发完文本自动触发 AI（响应在 worker 端跑、后台 push 回写聊天页）。
         // 本地模式仍维持手动触发以保留现有 UX。triggerAI 内部会从 DB 拉完整历史，
