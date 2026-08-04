@@ -120,6 +120,9 @@ export interface OSTheme {
   scheduleCardAppearance?: ScheduleCardAppearance;
   desktopDecorations?: DesktopDecoration[];
   customFont?: string;
+  /** 顶部时间栏布局：安全显示（安全区下方）/ 紧凑显示（嵌入安全区）/ 完全隐藏。 */
+  statusBarMode?: 'standard' | 'compact' | 'hidden';
+  /** @deprecated 旧版两档开关，仅用于兼容已有存档；新设置写入 statusBarMode。 */
   hideStatusBar?: boolean;
   // Chat UI customization (global)
   chatAvatarShape?: 'circle' | 'rounded' | 'square';
@@ -2024,6 +2027,8 @@ export interface StoryTheaterEntry {
     presetId?: string;
     /** 会话内快速预设只覆盖本剧场，不修改预设库。 */
     presetOverride?: StoryTheaterPresetDocument;
+    /** 仅供拒绝 assistant prefill、要求最后一条消息必须为 user 的接口使用；默认关闭以保留原生预设效果。 */
+    forceUserLastMessage?: boolean;
     createdAt: number;
     updatedAt: number;
 }
