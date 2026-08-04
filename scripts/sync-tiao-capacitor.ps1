@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
   [string]$WrapperRoot = 'D:\CHICK\CHICK2',
+  [ValidateSet('Release', 'Debug')]
+  [string]$AndroidBuildType = 'Release',
   [switch]$SkipAndroidBuild
 )
 
@@ -58,7 +60,7 @@ if ($SkipAndroidBuild) {
   exit 0
 }
 
-Write-Host '[4/4] Building the debug APK...'
+Write-Host "[4/4] Building the $AndroidBuildType APK..."
 $gradleDistRoot = Join-Path $env:USERPROFILE '.gradle\wrapper\dists\gradle-8.2.1-all'
 $gradleExecutable = Get-ChildItem -LiteralPath $gradleDistRoot -Filter 'gradle.bat' -Recurse -File -ErrorAction SilentlyContinue |
   Where-Object { $_.FullName -like '*\gradle-8.2.1\bin\gradle.bat' } |
@@ -67,18 +69,34 @@ $gradleExecutable = Get-ChildItem -LiteralPath $gradleDistRoot -Filter 'gradle.b
 $androidRoot = Join-Path $wrapperRoot 'android'
 Push-Location $androidRoot
 try {
+  $gradleArgs = @("assemble$AndroidBuildType")
+  if ($AndroidBuildType -eq 'Release') {
+    # 个人直装版使用 Android 默认调试证书签名：APK 本身仍是 release（debuggable=false），
+    # 但证书与之前的 debug 包一致，可以直接覆盖安装而不清空本地聊天数据。
+    $debugKeystore = Join-Path $env:USERPROFILE '.android\debug.keystore'
+    if (-not (Test-Path -LiteralPath $debugKeystore)) {
+      throw "Android debug keystore is missing: $debugKeystore"
+    }
+    $gradleArgs += @(
+      "-Pandroid.injected.signing.store.file=$debugKeystore",
+      '-Pandroid.injected.signing.store.password=android',
+      '-Pandroid.injected.signing.key.alias=androiddebugkey',
+      '-Pandroid.injected.signing.key.password=android'
+    )
+  }
   if ($gradleExecutable) {
     $env:GRADLE_USER_HOME = Join-Path $sourceRoot '.gradle-user-home'
-    & $gradleExecutable assembleDebug
+    & $gradleExecutable @gradleArgs
   } else {
-    & (Join-Path $androidRoot 'gradlew.bat') assembleDebug
+    & (Join-Path $androidRoot 'gradlew.bat') @gradleArgs
   }
   if ($LASTEXITCODE -ne 0) { throw "Android build failed with exit code $LASTEXITCODE" }
 } finally {
   Pop-Location
 }
 
-$apk = Join-Path $androidRoot 'app\build\outputs\apk\debug\app-debug.apk'
+$buildTypeLower = $AndroidBuildType.ToLowerInvariant()
+$apk = Join-Path $androidRoot "app\build\outputs\apk\$buildTypeLower\app-$buildTypeLower.apk"
 if (-not (Test-Path -LiteralPath $apk)) { throw "APK was not generated: $apk" }
 
 $hash = Get-FileHash -LiteralPath $apk -Algorithm SHA256

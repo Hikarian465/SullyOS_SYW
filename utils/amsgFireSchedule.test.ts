@@ -200,10 +200,16 @@ describe('工具与说明块', () => {
 // 否则同一个 mode 在不同入口生成出来的消息方向会不一样。
 describe('buildTaskInstruction', () => {
   it('prompted 带上方向', () => {
-    expect(buildTaskInstruction('prompted', '问问吃了没')).toContain('额外提示：问问吃了没');
+    const instruction = buildTaskInstruction('prompted', '问问吃了没');
+    expect(instruction).toContain('额外提示：问问吃了没');
+    expect(instruction).toContain('两到三个短聊天气泡');
+    expect(instruction).toContain('真实换行');
   });
 
   it('auto 无灵感时写「无」，不留空', () => {
-    expect(buildTaskInstruction('auto')).toContain('可选灵感补充：无');
+    const instruction = buildTaskInstruction('auto');
+    expect(instruction).toContain('可选灵感补充：无');
+    expect(instruction).toContain('两到三个短聊天气泡');
+    expect(instruction).toContain('真实换行');
   });
 });

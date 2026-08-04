@@ -673,6 +673,13 @@ describe('buildFirePack 的时区参照系与模板（①）', () => {
     expect(template).toContain('关心别变成查岗');
   });
 
+  it('主动消息通常要求两到三个真实换行分隔的短气泡', async () => {
+    const { template } = await pack(baseChar());
+    expect(template).toContain('2 到 3 个短聊天气泡');
+    expect(template).toContain('必须使用真实换行');
+    expect(template).toContain('只有一句话明显更自然时');
+  });
+
   // 回归守卫：timeAwarenessEnabled=false 的架空角色在前台连今天几号都读不到
   // （buildTimeAwarenessBlock 直接返回空串），主动消息这边却精确报出年月日 + 星期。
   // 同一个开关不能有两套行为。
