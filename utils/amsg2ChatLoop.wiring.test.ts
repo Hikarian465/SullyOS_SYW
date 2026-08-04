@@ -67,3 +67,16 @@ describe('不支持原生 tools 的 API 兼容', () => {
     expect(src).toContain('stripAmsg2TextToolCalls(finalContent, leftovers)');
   });
 });
+
+describe('最新用户消息先同步给主动消息云端', () => {
+  it('历史落库后、普通回复请求前立即刷新 fire_pack', () => {
+    expect(src).toContain("import { flushAmsgState, markAmsgStateDirty");
+    const historyReady = src.indexOf('const contextMsgs = fullHistory || currentMsgs;');
+    const preReplyFlush = src.indexOf("await flushAmsgState('user-message-before-reply');", historyReady);
+    const payloadBuild = src.indexOf("const payload = await stageT('payload'", historyReady);
+
+    expect(historyReady).toBeGreaterThan(-1);
+    expect(preReplyFlush).toBeGreaterThan(historyReady);
+    expect(payloadBuild).toBeGreaterThan(preReplyFlush);
+  });
+});

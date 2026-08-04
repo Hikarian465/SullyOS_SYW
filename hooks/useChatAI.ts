@@ -40,7 +40,7 @@ import {
     findNewStreamPreviewHandoverIds,
 } from '../utils/streamPreview';
 import { ActiveMsgStore } from '../utils/activeMsgStore';
-import { markAmsgStateDirty, startAmsgChatPresence, stopAmsgChatPresence } from '../utils/amsgStateSync';
+import { flushAmsgState, markAmsgStateDirty, startAmsgChatPresence, stopAmsgChatPresence } from '../utils/amsgStateSync';
 import { getLastRealUserMessageAt } from '../utils/amsg2ExpireGuard';
 import { getPendingTasks, hasActiveAiTask, isAmsg2EnabledForChar } from '../utils/amsg2Tasks';
 import { buildAmsg2TaskContextText, collectAmsg2TaskContext } from '../utils/amsg2TaskContext';
@@ -785,6 +785,15 @@ export const useChatAI = ({
             if (fullHistory) {
                 console.log(`📊 [Context] Loaded ${fullHistory.length} msgs from DB (React state had ${currentMsgs.length}, mode=${contextRange?.mode}, maxStart=${contextRange?.maxRangeStartMessageId ?? 'none'}, effectiveStart=${contextRange?.effectiveStartMessageId ?? 'none'})`);
             }
+
+            // 主动消息到点只会读取云端 fire_pack。以前主要等本轮回复结束后才打包上传：
+            // 用户刚发完消息、回复还在生成时若强制任务先触发，云端看到的仍是上一轮上下文。
+            // 此时最新用户消息已经落 DB，先立即刷新一次；finally 仍会再刷新，把稍后的角色回复补进去。
+            markAmsgStateDirty({
+                char: { ...char, activeMsg2Config: amsg2Session.getConfig() },
+                userProfile, groups, realtimeConfig,
+            });
+            await flushAmsgState('user-message-before-reply');
 
             // 1. 构造完整 chat 请求载荷（memoryPalace 召回 + system prompt + 双语 / HTML / 思考链 / MCD + 历史）
             //    — 主动消息和 emotion eval 走的是同一个 helper，保证三家拿到的"材料"完全一致。
