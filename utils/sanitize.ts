@@ -645,7 +645,7 @@ function chunkText(text: string): string[] {
   const CJK = '\\u4e00-\\u9fff\\u3400-\\u4dbf\\u3000-\\u303f\\uff00-\\uffef\\u2000-\\u206f\\u2e80-\\u2eff\\u3001-\\u3003\\u2018-\\u201f\\u300a-\\u300f\\uff01-\\uff0f\\uff1a-\\uff20';
   // No lookbehind (?<=): iOS Safari <16.4 JSC doesn't support it; old devices throw
   // "invalid group specifier name" at new RegExp. Capture the left CJK char + zero-width
-  // lookahead on the right, restore via $1. Byte-equivalent (see utils/lookbehindFree.test.ts).
+  // lookahead on the right, restore via $1, avoiding lookbehind on older iOS engines.
   const cjkSplitRe = new RegExp(`([${CJK}])\\s+(?=[${CJK}])`, 'g');
   const SPLIT = String.fromCharCode(1);  // CJK split marker (distinct slot from SPACE_SENTINEL below)
 

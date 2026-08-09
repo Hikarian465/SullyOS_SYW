@@ -168,7 +168,7 @@ export function resolveDateReferences(query: string, now: Date = new Date()): Da
 
     // 7) 孤立月日：3月4号 / 12月15日 / 3/4 / 12-15（无年份）→ 最近一次出现
     //    原本用 (?<![\d年]) 排除"前面紧跟数字或年"的情况。iOS Safari <16.4 的 JSC 不支持后行断言,
-    //    改成匹配后用 m.index 检查前一字符, 行为等价 (见 utils/lookbehindFree.test.ts)。
+    //    改成匹配后用 m.index 检查前一字符，避开旧版 iOS 不支持的后行断言。
     for (const m of query.matchAll(/(\d{1,2}|[一二三四五六七八九十]+)\s*月\s*(\d{1,2}|[一二三四五六七八九十]+)\s*[日号]/gu)) {
         const idx = m.index ?? 0;
         if (idx > 0 && /[\d年]/u.test(query[idx - 1])) continue;  // 等价于 (?<![\d年])

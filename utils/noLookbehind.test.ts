@@ -3,7 +3,7 @@
  *
  * 为什么: iOS Safari <16.4 (WebKit/JSC) 不支持 lookbehind, 旧设备上 new RegExp('(?<=…)')
  *   直接抛 "Invalid regular expression: invalid group specifier name", 被聊天兜底 catch
- *   包成错误气泡弹给用户。详见 utils/lookbehindFree.test.ts。
+ *   包成错误气泡弹给用户。源码必须持续避开这类正则语法。
  *
  * 怎么测: 扫源码目录 + worker bundle 产物。先剥注释 (我们在注释里大量用 (?<=…) 做说明,
  *   不能误伤), 再检测剩余代码是否含 lookbehind。命中即 fail, 报出文件:行号。
@@ -15,7 +15,7 @@ import { join, extname } from 'path';
 const ROOT = join(__dirname, '..');
 const SRC_DIRS = ['utils', 'hooks', 'apps', 'components', 'worker'];
 const SRC_EXT = new Set(['.ts', '.tsx', '.js', '.mjs']);
-const SKIP_FILE = /(lookbehindFree\.test\.ts|noLookbehind\.test\.ts)$/;
+const SKIP_FILE = /noLookbehind\.test\.ts$/;
 const SKIP_DIR = /node_modules|\.worktrees|dist/;
 const BUNDLE_FILES = [
   'public/instant-worker.bundle.js',

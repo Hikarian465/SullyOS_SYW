@@ -65,7 +65,7 @@ function renderInline(line: string, opts: RichTextOpts, key: string): React.Reac
 
         // 单星斜体, 要排除 **粗体** 的单星。不用后行断言 (?<!\*): iOS Safari <16.4 的 JSC 不支持,
         // 旧设备 new RegExp 会抛 "invalid group specifier name". 改成把左侧非星字符 (或行首) 捕获进
-        // it[1], 命中后用 it[1].length 修正 idx/len, 行为等价 (见 utils/lookbehindFree.test.ts)。
+        // it[1], 命中后用 it[1].length 修正 idx/len，避开旧版 iOS 不支持的后行断言。
         const it = rest.match(/(^|[^*])\*([^*]+)\*(?!\*)/);
         if (it && it.index !== undefined) {
             const offset = it[1].length;  // 行首匹配为 0, 普通字符为 1

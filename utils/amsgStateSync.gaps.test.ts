@@ -44,7 +44,7 @@ describe('utils 层直写 DB 后的内存回灌（事件名契约）', () => {
 
   it('MusicContext 加歌落库后广播 char-music-profile-updated（带 charId + musicProfile）', () => {
     const src = read(MUSIC_CONTEXT);
-    const fn = sliceBetween(src, 'addSongToCharPlaylist: async', '\n    };\n  }, [current');
+    const fn = sliceBetween(src, 'addSongToCharPlaylist: async', 'const value: MusicContextType');
     // 先落库再广播——反过来的话监听方拿到的 musicProfile 还没进 DB。
     expect(fn).toMatch(/DB\.saveCharacter\([\s\S]*?dispatchEvent\(new CustomEvent\('char-music-profile-updated'/);
     expect(fn).toContain('detail: { charId: cid, musicProfile: updatedProfile }');
