@@ -1337,7 +1337,7 @@ async function removeQueuedRequest(id) {
 }
 
 // worker/sw-keep-alive.ts
-var SW_VERSION = "1.16.0";
+var SW_VERSION = "1.17.0";
 var PING_INTERVAL = 15e3;
 var MAX_MANUAL_ALIVE_MS = 5 * 6e4;
 var ACTIVE_MSG_DB_NAME = "ActiveMsg";
@@ -1696,6 +1696,8 @@ async function notifyVisibleClientForToolRequest(payload) {
 async function saveEmotionUpdateToInbox(payload) {
   const charId = payload?.metadata?.charId;
   const emotionRaw = payload?.metadata?.emotionRaw || "";
+  const emotionRef = typeof payload?.metadata?.amsgEmotionRef === "string" ? payload.metadata.amsgEmotionRef : "";
+  const emotionError = typeof payload?.metadata?.emotionError === "string" ? payload.metadata.emotionError : "";
   if (!charId) {
     traceSw("emotion-drop-no-char", payload);
     return;
@@ -1708,12 +1710,20 @@ async function saveEmotionUpdateToInbox(payload) {
       charName: payload?.contactName || "",
       body: "",
       messageType: "emotion_update",
-      metadata: { charId, emotionRaw },
+      metadata: {
+        charId,
+        emotionRaw,
+        ...emotionRef ? { amsgEmotionRef: emotionRef } : {},
+        ...emotionError ? { emotionError } : {}
+      },
       sentAt: Date.now(),
       receivedAt: Date.now()
     });
   });
-  traceSw("inbox-emotion-saved", payload, { emotionChars: String(emotionRaw).length });
+  traceSw("inbox-emotion-saved", payload, {
+    emotionChars: String(emotionRaw).length,
+    emotionRef: emotionRef || void 0
+  });
   await notifyClients({ type: "active-msg-received", charId, charName: payload?.contactName || "", body: "", emotionUpdate: true });
 }
 async function fetchBlobEnvelope(payload) {

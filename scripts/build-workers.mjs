@@ -81,6 +81,31 @@ const sharedOpts = {
   external: ['cloudflare:*'],
 };
 
+/**
+ * 临时兼容 @rei-standard/amsg-server 的 D1 前缀清理实现。
+ *
+ * D1 会拒绝过长的 LIKE/GLOB pattern；情绪状态的 keyPrefix 足够长时，整批 client_state
+ * 同步会报 `LIKE or GLOB pattern too complex`。上游发布正式修复前，在生成物上做一个
+ * fail-closed 的等价替换：字面前缀比较不走 LIKE pattern parser。上游一旦自带同样修复，
+ * 这里识别新形状后直接跳过；若两种形状都不存在则中止构建，避免静默产出未知代码。
+ */
+const patchAmsgD1PrefixCleanup = (file) => {
+  let source = readFileSync(file, 'utf8');
+  const oldSql = String.raw`WHERE user_id = ? AND namespace = ? AND key LIKE ? ESCAPE '\\' AND updated_at <= ?`;
+  const newSql = 'WHERE user_id = ? AND namespace = ? AND substr(key, 1, length(?)) = ? AND updated_at <= ?';
+  const oldBind = 'this._db.prepare(CLEANUP_PREFIX_SQL).bind(userId, c.namespace, `${escapeLikePrefix(c.keyPrefix)}%`, c.updatedAt)';
+  const newBind = 'this._db.prepare(CLEANUP_PREFIX_SQL).bind(userId, c.namespace, c.keyPrefix, c.keyPrefix, c.updatedAt)';
+
+  const alreadyFixed = source.includes(newSql) && source.includes(newBind);
+  if (!alreadyFixed) {
+    if (!source.includes(oldSql) || !source.includes(oldBind)) {
+      throw new Error(`amsg D1 prefix cleanup shape changed; refusing to build unpatched bundle: ${file}`);
+    }
+    source = source.replace(oldSql, newSql).replace(oldBind, newBind);
+    writeFileSync(file, source);
+  }
+};
+
 console.log(`Building ${WORKERS.length} worker bundle(s)...`);
 
 for (const w of WORKERS) {
@@ -110,6 +135,7 @@ for (const w of WORKERS) {
 
   for (const out of outputs) {
     await build({ ...sharedOpts, entryPoints: [entry], outfile: out, banner });
+    if (w.name === 'amsg') patchAmsgD1PrefixCleanup(out);
   }
 
   const sizeRef = outWorker || outPublic;

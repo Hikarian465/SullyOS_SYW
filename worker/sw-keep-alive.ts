@@ -68,8 +68,11 @@ import { installReiSW } from '@rei-standard/amsg-sw';
  *            并往 ActiveMsg 库 kv store 写「订阅已变化」标记（主线程据此把新订阅逐条
  *            写回已排程的远端任务，见 utils/activeMsgRuntime.ts）。onupgradeneeded 补建
  *            kv store（SW-first 安装时主线程 schema 还没建过）。
+ *  - 1.17.0: emotion_update 支持 amsgEmotionRef。AMSG2 情绪没赶上主回复时，Worker
+ *            只推短引用键（长结果仍在 client_state），SW 把引用持久化进 inbox，避免
+ *            页面进后台后 window 定时轮询被冻结、必须回前台才“继续生成”。
  */
-const SW_VERSION = '1.16.0';
+const SW_VERSION = '1.17.0';
 
 const PING_INTERVAL = 15_000;
 const MAX_MANUAL_ALIVE_MS = 5 * 60_000;
@@ -562,6 +565,15 @@ async function saveEmotionUpdateToInbox(payload: any) {
   // emotionRaw 允许为空: worker 评估失败/返回空时也会推一条 "done" 信号 (emotionRaw=''),
   // 仍需写 inbox + notify, 让客户端 flush 时 fire 'instant-emotion-done' 熄灭 "情绪分析中" 徽章.
   const emotionRaw = payload?.metadata?.emotionRaw || '';
+  // AMSG2 晚投的长情绪不能塞进约 4KB 的 Web Push：Worker 先把原文写进 client_state，
+  // 再只推这个引用键。一定要原样落 inbox，主线程恢复时才能取回；旧代码把它丢掉后会
+  // 把这条完成信号误判成「空结果」。
+  const emotionRef = typeof payload?.metadata?.amsgEmotionRef === 'string'
+    ? payload.metadata.amsgEmotionRef
+    : '';
+  const emotionError = typeof payload?.metadata?.emotionError === 'string'
+    ? payload.metadata.emotionError
+    : '';
   if (!charId) {
     traceSw('emotion-drop-no-char', payload);
     return;
@@ -575,12 +587,20 @@ async function saveEmotionUpdateToInbox(payload: any) {
       charName: payload?.contactName || '',
       body: '',
       messageType: 'emotion_update',
-      metadata: { charId, emotionRaw },
+      metadata: {
+        charId,
+        emotionRaw,
+        ...(emotionRef ? { amsgEmotionRef: emotionRef } : {}),
+        ...(emotionError ? { emotionError } : {}),
+      },
       sentAt: Date.now(),
       receivedAt: Date.now(),
     });
   });
-  traceSw('inbox-emotion-saved', payload, { emotionChars: String(emotionRaw).length });
+  traceSw('inbox-emotion-saved', payload, {
+    emotionChars: String(emotionRaw).length,
+    emotionRef: emotionRef || undefined,
+  });
 
   // 触发客户端 flush (不带真实内容, 客户端 flush 时按 messageType 静默处理). 不 showNotification.
   await notifyClients({ type: 'active-msg-received', charId, charName: payload?.contactName || '', body: '', emotionUpdate: true });

@@ -797,6 +797,40 @@ describe('flushInboxToChat 落库时间戳（走真库）', () => {
       clearSpy.mockRestore();
     }, 20000);
 
+    it('晚投完成的独立 emotion_update 引用 → 不靠页面定时器，立即取回并落 buff', async () => {
+      const charId = 'char-emotion-push-ref';
+      await DB.saveCharacter({ id: charId, name: '独立推送角色' } as any);
+      const ref = 'emotion_update:client-task-push-ref';
+      const readSpy = vi.spyOn(ActiveMsgClient, 'readClientStateValue')
+        .mockResolvedValue(JSON.stringify({
+          changed: true,
+          buffs: [{ label: '笃定', emoji: '🧭', intensity: 3 }],
+          injection: '你此刻很笃定。',
+        }));
+
+      await ActiveMsgStore.saveInboxMessage(inboxMsg({
+        messageId: 'emotion_client-task-push-ref',
+        charId,
+        charName: '独立推送角色',
+        messageType: 'emotion_update',
+        metadata: { charId, emotionRaw: '', amsgEmotionRef: ref },
+      }));
+
+      const { seen, restore } = captureEvents();
+      try {
+        await flushInboxToChat();
+      } finally {
+        restore();
+        cancelLateEmotionPoll(charId);
+      }
+
+      expect(readSpy).toHaveBeenCalledWith(amsgStateNamespace(charId), ref);
+      const updated = (await DB.getAllCharacters()).find((c) => c.id === charId)!;
+      expect(updated.activeBuffs?.map((b: any) => b.label)).toContain('笃定');
+      expect(seen.some((e) => e.type === 'instant-emotion-done' && e.detail?.charId === charId)).toBe(true);
+      readSpy.mockRestore();
+    }, 20000);
+
     it('补落轮询：跳数用尽还没等到 → 报「最终没等到」+ 熄灯', async () => {
       const charId = 'char-emotion-late-timeout';
       await DB.saveCharacter({ id: charId, name: '超时角色' } as any);

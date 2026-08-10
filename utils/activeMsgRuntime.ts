@@ -1525,11 +1525,26 @@ const flushInboxToChatImpl = async () => {
 
       // emotion_update: worker 跑完副 API 情绪评估后推回的 buff 结果. 不渲染成聊天消息, 直接落 buff +
       // 广播 innerState (useChatAI 监听 'emotion-innerstate-updated' → setEvolvedNarrative 喂下一轮).
-      // 识别条件用 messageType==='emotion_update' 或 metadata.emotionRaw 存在 —— 后者兜底旧 SW
+      // 独立完成通知认 messageType==='emotion_update'；metadata.emotionRaw 兜底旧 SW。
+      // 不能只看 amsgEmotionRef：普通回复的 pending/offload metadata 也有该字段。
       // (<1.8.0 不认 emotion_update messageKind, 会把它当 content 存进 inbox, 但 metadata.emotionRaw
       // 仍被 saveContentToInbox 透传进来). 这样情绪落地不依赖 SW 是否升级.
-      if (message.messageType === 'emotion_update' || (message.metadata as any)?.emotionRaw) {
-        const emotionRaw = (message.metadata as any)?.emotionRaw;
+      const pushedEmotionRef = (message.metadata as any)?.amsgEmotionRef;
+      if (message.messageType === 'emotion_update'
+        || (message.metadata as any)?.emotionRaw) {
+        // 晚投完成的独立 push 到了，页面轮询那条旧路立即作废。若 push 与主回复在网络上
+        // 极少数乱序，client_state 的副本仍保留，后到的 pending 轮询可幂等再落一次。
+        cancelLateEmotionPoll(message.charId);
+        let emotionRaw = (message.metadata as any)?.emotionRaw;
+        if (!emotionRaw && typeof pushedEmotionRef === 'string' && pushedEmotionRef) {
+          // Worker 保证先写 client_state 再推引用，因此 null 是真实缺失；网络错误直接抛给
+          // inbox 重试机制，不能把一阵抖动误报成「情绪无输出」并 ack 掉完成信号。
+          emotionRaw = await ActiveMsgClient.readClientStateValue(
+            amsgStateNamespace(message.charId), pushedEmotionRef);
+          if (emotionRaw == null) {
+            throw new Error(`晚投情绪引用尚不可用: ${pushedEmotionRef}`);
+          }
+        }
         if (emotionRaw) {
           await landCloudEmotionResult(message.charId, String(emotionRaw));
         } else {

@@ -4399,11 +4399,11 @@ var D1Adapter = class {
          updated_at = excluded.updated_at
        WHERE excluded.updated_at >= client_state.updated_at`;
     const CLEANUP_PREFIX_SQL = `DELETE FROM client_state
-       WHERE user_id = ? AND namespace = ? AND key LIKE ? ESCAPE '\\' AND updated_at <= ?`;
+       WHERE user_id = ? AND namespace = ? AND substr(key, 1, length(?)) = ? AND updated_at <= ?`;
     const CLEANUP_KEY_SQL = `DELETE FROM client_state
        WHERE user_id = ? AND namespace = ? AND key = ? AND updated_at <= ?`;
     const buildStatements = () => [
-      ...cleanups.map((c) => typeof c.key === "string" ? this._db.prepare(CLEANUP_KEY_SQL).bind(userId, c.namespace, c.key, c.updatedAt) : this._db.prepare(CLEANUP_PREFIX_SQL).bind(userId, c.namespace, `${escapeLikePrefix(c.keyPrefix)}%`, c.updatedAt)),
+      ...cleanups.map((c) => typeof c.key === "string" ? this._db.prepare(CLEANUP_KEY_SQL).bind(userId, c.namespace, c.key, c.updatedAt) : this._db.prepare(CLEANUP_PREFIX_SQL).bind(userId, c.namespace, c.keyPrefix, c.keyPrefix, c.updatedAt)),
       ...entries.map(
         (entry) => this._db.prepare(UPSERT_SQL).bind(userId, entry.namespace, entry.key, entry.value, entry.updatedAt)
       )
@@ -5522,7 +5522,7 @@ function createWebCryptoWebPush(vapid = {}, { ttl = SCHEDULED_DEFAULT_TTL } = {}
 }
 
 // utils/amsgBundleVersion.ts
-var AMSG_BUNDLE_VERSION = "2026-08-10.3";
+var AMSG_BUNDLE_VERSION = "2026-08-10.4";
 
 // utils/localDate.ts
 function getLocalDateKey(date = /* @__PURE__ */ new Date()) {
@@ -10926,6 +10926,59 @@ var sendInstantErrorPush = async (args) => {
     console.warn("[amsg:instant-chat] \u5931\u8D25\u901A\u77E5\u6CA1\u53D1\u51FA\u53BB\uFF08\u5BA2\u6237\u7AEF\u4ECD\u9760 60s \u70B9\u540D\u515C\u5E95\uFF09", error);
   }
 };
+var sendInstantEmotionPush = async (args) => {
+  const deps = instantErrorPushDeps;
+  if (!deps?.masterKey) return;
+  try {
+    const row = args.userId ? await deps.db.prepare("SELECT user_id, subscription FROM push_subscriptions WHERE user_id = ? LIMIT 1").bind(args.userId).first() : await deps.db.prepare("SELECT user_id, subscription FROM push_subscriptions LIMIT 1").first();
+    const stored = row?.subscription;
+    const userId = row?.user_id;
+    if (typeof stored !== "string" || !stored || typeof userId !== "string" || !userId) return;
+    let subscription;
+    try {
+      const userKey = await deriveUserEncryptionKey(userId, deps.masterKey);
+      subscription = JSON.parse(await decryptFromStorage(stored, userKey));
+    } catch {
+      subscription = JSON.parse(stored);
+    }
+    const emotionRef = amsgEmotionUpdateKey(args.clientTaskId);
+    const baseMetadata = {
+      charId: args.charId,
+      amsgClientTaskId: args.clientTaskId,
+      ...args.taskUuid ? { taskUuid: args.taskUuid } : {}
+    };
+    const makePayload = (metadata) => ({
+      messageKind: "emotion_update",
+      messageType: "instant",
+      charId: args.charId,
+      contactName: args.contactName ?? void 0,
+      // 确定性 id：同一轮晚投重试只覆盖 SW inbox 里的同一条，不会重复落情绪。
+      messageId: `emotion_${args.clientTaskId}`,
+      timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+      metadata,
+      // 与 Instant Push 的 emotion_update 同策略：前台静默，后台给一条轻提示，避免浏览器
+      // 把反复不展示通知的后台 push 当成滥用而降权。
+      notification: {
+        show: "when-hidden",
+        silent: true,
+        title: args.contactName ? `\u6765\u81EA ${args.contactName}` : "\u4E3B\u52A8\u6D88\u606F",
+        tag: `chat-message-${args.charId}`,
+        body: "\u5BF9\u65B9\u7684\u60C5\u7EEA\u4EA7\u751F\u4E86\u6CE2\u52A8..."
+      }
+    });
+    let payload = makePayload({
+      ...baseMetadata,
+      emotionRaw: args.outcome.raw ?? "",
+      ...args.outcome.error ? { emotionError: args.outcome.error } : {}
+    });
+    if (args.outcome.raw && !pushFits(payload)) {
+      payload = makePayload({ ...baseMetadata, amsgEmotionRef: emotionRef });
+    }
+    await deps.webpush.sendNotification(subscription, JSON.stringify(payload));
+  } catch (error) {
+    console.warn("[amsg:emotion] \u665A\u6295\u5B8C\u6210\u901A\u77E5\u6CA1\u53D1\u51FA\u53BB\uFF08\u5BA2\u6237\u7AEF\u4ECD\u53EF\u6309\u5F15\u7528\u952E\u8F6E\u8BE2\uFF09", error);
+  }
+};
 var amsgFireSettled = async (info) => {
   const stash = getFireStash(info.scratch);
   if (!stash) return;
@@ -10972,6 +11025,14 @@ var amsgFireSettled = async (info) => {
       } else {
         console.warn("[amsg:emotion] \u665A\u6295\u8BC4\u4F30\u6CA1\u8DD1\u51FA\u7ED3\u679C\uFF08\u8FD9\u4E00\u8F6E\u60C5\u7EEA\u4E0D\u66F4\u65B0\uFF09", outcome.error);
       }
+      await sendInstantEmotionPush({
+        charId: stash.charId,
+        clientTaskId: stash.clientTaskId,
+        taskUuid: stash.taskUuid,
+        outcome,
+        userId: typeof info.task?.user_id === "string" ? info.task.user_id : null,
+        contactName: stash.toolCtx.char.name
+      });
     } catch (error) {
       console.warn("[amsg:emotion] \u665A\u6295\u8BC4\u4F30\u6536\u5C3E\u5931\u8D25\uFF08\u8FD9\u4E00\u8F6E\u60C5\u7EEA\u4E0D\u66F4\u65B0\uFF09", error);
     }

@@ -3656,12 +3656,27 @@ describe('即时对话的云端情绪评估', () => {
   });
 
   // 晚投不丢：没赶上顺风车的评估，收尾（amsgFireSettled）等它出结果写进旁路存储，
-  // 客户端按 push 上的引用键轮询补落。回归守卫——以前这一轮评估是直接作废的。
-  it('没赶上的评估晚投不丢：收尾时写进旁路存储', async () => {
+  // 再独立推一条 emotion_update 唤醒 SW。长结果不能直接塞 push，只带引用键。
+  it('没赶上的长评估：收尾写旁路并独立推 emotion_update 引用', async () => {
     vi.useFakeTimers();
+    const sent: Array<{ subscription: any; body: any }> = [];
     try {
       let resolveEval!: (r: Response) => void;
       vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { resolveEval = resolve; })));
+      const row = {
+        user_id: 'u1',
+        subscription: JSON.stringify({ endpoint: 'https://push.example/emotion', keys: {} }),
+      };
+      const first = vi.fn(async () => row);
+      configureInstantErrorPush({
+        webpush: {
+          sendNotification: vi.fn(async (subscription: unknown, body: string) => {
+            sent.push({ subscription, body: JSON.parse(body) });
+          }),
+        },
+        db: { prepare: vi.fn(() => ({ bind: vi.fn(() => ({ first })), first })) },
+        masterKey: 'a'.repeat(64),
+      } as any);
 
       const store = makeStore();
       const pending = evalFire(store, { amsgEmotionEval: EVAL_SPEC });
@@ -3676,14 +3691,26 @@ describe('即时对话的云端情绪评估', () => {
         status: 'sent', sentCount: 2, task: { retry_count: 0 },
         scratch, writeState: store.writeState,
       } as any);
+      const longRaw = JSON.stringify({
+        changed: true,
+        buffs: [],
+        injection: `LATE-EVAL-MARKER ${'很长的情绪底色。'.repeat(900)}`,
+      });
       resolveEval(new Response(JSON.stringify({
-        choices: [{ message: { content: '{"changed":true,"buffs":[]} LATE-EVAL-MARKER' } }],
+        choices: [{ message: { content: longRaw } }],
       }), { status: 200, headers: { 'content-type': 'application/json' } }));
       for (let i = 0; i < 8; i += 1) await vi.advanceTimersByTimeAsync(0);
       await settling;
 
       expect(store.rows.get(`emotion_update:${CLIENT_TASK_ID}`)).toContain('LATE-EVAL-MARKER');
+      expect(sent).toHaveLength(1);
+      expect(sent[0].body.messageKind).toBe('emotion_update');
+      expect(sent[0].body.messageId).toBe(`emotion_${CLIENT_TASK_ID}`);
+      expect(sent[0].body.metadata.amsgEmotionRef).toBe(`emotion_update:${CLIENT_TASK_ID}`);
+      expect(sent[0].body.metadata.emotionRaw).toBeUndefined();
+      expect(sent[0].body.notification.show).toBe('when-hidden');
     } finally {
+      configureInstantErrorPush(null);
       vi.useRealTimers();
     }
   });

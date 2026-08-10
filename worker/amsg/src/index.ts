@@ -731,7 +731,11 @@ const writeChatFail = async (
 };
 
 /**
- * 即时对话终态失败直发 error push 用到的三样：推送 transport、D1、master key。
+ * 即时对话收尾直发 push 用到的三样：推送 transport、D1、master key。
+ *
+ * 目前有两种旁路通知共用它：终态失败的 error push，以及没赶上主回复顺风车的
+ * emotion_update push。后者不能只靠页面里的 setTimeout 轮询——页面进后台后 timer 会
+ * 被冻结，表现就是「回到前端情绪才继续」。
  * buildWorkerConfig 每次组装配置时写入（isolate 级全局，同代理地址 / XHS cookie 的先例：
  * 单用户部署里全局同一份才安全）。没配齐时直发整个跳过，失败告知退回 60s 点名兜底。
  */
@@ -819,13 +823,89 @@ const sendInstantErrorPush = async (args: {
   }
 };
 
+/**
+ * 情绪评估没赶上主回复时，再独立投递一条 emotion_update。
+ *
+ * 短结果直接内联，老 Service Worker 也能消费；长结果继续放在 client_state，只推一个
+ * amsgEmotionRef。后者专门避开 Web Push ~4KB 的硬上限（真实 injection 可超过 7KB）。
+ * 新 Service Worker 会把引用键持久化进 inbox，主线程恢复时一次性取回；页面里的 20s
+ * 轮询保留作旧客户端/推送丢失兜底，但不再是唯一完成路径。
+ */
+const sendInstantEmotionPush = async (args: {
+  charId: string;
+  clientTaskId: string;
+  taskUuid?: string | null;
+  outcome: AmsgEmotionEvalOutcome;
+  /** 任务行上的 user_id；拿不到时取订阅表唯一那行（单用户部署）。 */
+  userId?: string | null;
+  contactName?: string | null;
+}): Promise<void> => {
+  const deps = instantErrorPushDeps;
+  if (!deps?.masterKey) return;
+  try {
+    const row = args.userId
+      ? await deps.db.prepare('SELECT user_id, subscription FROM push_subscriptions WHERE user_id = ? LIMIT 1').bind(args.userId).first()
+      : await deps.db.prepare('SELECT user_id, subscription FROM push_subscriptions LIMIT 1').first();
+    const stored = row?.subscription;
+    const userId = row?.user_id;
+    if (typeof stored !== 'string' || !stored || typeof userId !== 'string' || !userId) return;
+    let subscription: unknown;
+    try {
+      const userKey = await deriveUserEncryptionKey(userId, deps.masterKey);
+      subscription = JSON.parse(await decryptFromStorage(stored, userKey));
+    } catch {
+      subscription = JSON.parse(stored);
+    }
+
+    const emotionRef = amsgEmotionUpdateKey(args.clientTaskId);
+    const baseMetadata = {
+      charId: args.charId,
+      amsgClientTaskId: args.clientTaskId,
+      ...(args.taskUuid ? { taskUuid: args.taskUuid } : {}),
+    };
+    const makePayload = (metadata: Record<string, unknown>) => ({
+      messageKind: 'emotion_update',
+      messageType: 'instant',
+      charId: args.charId,
+      contactName: args.contactName ?? undefined,
+      // 确定性 id：同一轮晚投重试只覆盖 SW inbox 里的同一条，不会重复落情绪。
+      messageId: `emotion_${args.clientTaskId}`,
+      timestamp: new Date().toISOString(),
+      metadata,
+      // 与 Instant Push 的 emotion_update 同策略：前台静默，后台给一条轻提示，避免浏览器
+      // 把反复不展示通知的后台 push 当成滥用而降权。
+      notification: {
+        show: 'when-hidden',
+        silent: true,
+        title: args.contactName ? `来自 ${args.contactName}` : '主动消息',
+        tag: `chat-message-${args.charId}`,
+        body: '对方的情绪产生了波动...',
+      },
+    });
+
+    let payload = makePayload({
+      ...baseMetadata,
+      emotionRaw: args.outcome.raw ?? '',
+      ...(args.outcome.error ? { emotionError: args.outcome.error } : {}),
+    });
+    // 完整情绪原文放不下时只推引用键；原文已由 amsgFireSettled 先写进 client_state。
+    if (args.outcome.raw && !pushFits(payload)) {
+      payload = makePayload({ ...baseMetadata, amsgEmotionRef: emotionRef });
+    }
+    await deps.webpush.sendNotification(subscription, JSON.stringify(payload));
+  } catch (error) {
+    // D1 引用轮询仍在，旁路通知失败不能反过来把已经送达的主回复判成失败。
+    console.warn('[amsg:emotion] 晚投完成通知没发出去（客户端仍可按引用键轮询）', error);
+  }
+};
+
 export const amsgFireSettled = async (
   info: {
     /** sent / skipped / failed / not-handled；区分「有没有真发出去」和「这跳挂了」。 */
     status?: string;
     sentCount?: number;
     /** D1 任务行原样（上游 notifyFireSettled 透传；retry_count 是明文列）。 */
-    task?: { retry_count?: unknown } | null;
+    task?: { retry_count?: unknown; user_id?: unknown } | null;
     /** 这一跳抛出的错误（status 'failed' 时才有）。 */
     error?: unknown;
     scratch: Record<string, unknown>;
@@ -882,8 +962,8 @@ export const amsgFireSettled = async (
     }
   }
 
-  // 情绪评估没赶上顺风车、回复已经先发出去了 → 在这里等它出结果，写进旁路存储
-  // （push 上已挂引用键 + pending 标记，客户端对着键轮询补落）。上游 await 这个 hook，
+  // 情绪评估没赶上顺风车、回复已经先发出去了 → 在这里等它出结果，写进旁路存储，
+  // 再独立推一条 emotion_update 唤醒 Service Worker。上游 await 这个 hook，
   // 评估自带 EMOTION_EVAL_TIMEOUT_MS，续等是有界的。只在真送出去过（sentCount > 0）
   // 时等：一段都没出去的话客户端根本没收到 pending 标记，任务还会整轮重跑。
   // 评估失败或超时什么都不写——旁路只存 applyEmotionEvalRaw 认识的评估原文，
@@ -900,6 +980,14 @@ export const amsgFireSettled = async (
       } else {
         console.warn('[amsg:emotion] 晚投评估没跑出结果（这一轮情绪不更新）', outcome.error);
       }
+      await sendInstantEmotionPush({
+        charId: stash.charId,
+        clientTaskId: stash.clientTaskId,
+        taskUuid: stash.taskUuid,
+        outcome,
+        userId: typeof info.task?.user_id === 'string' ? info.task.user_id : null,
+        contactName: stash.toolCtx.char.name,
+      });
     } catch (error) {
       console.warn('[amsg:emotion] 晚投评估收尾失败（这一轮情绪不更新）', error);
     }
