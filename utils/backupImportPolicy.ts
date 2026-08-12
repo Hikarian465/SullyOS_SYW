@@ -17,9 +17,13 @@ export function assertSupportedSullyBackup(input: unknown): asserts input is Rec
         throw new Error('备份内容无效：只支持 SullyOS 导出的 ZIP 或 JSON 备份。');
     }
 
+    // fork 修改：不再拒绝第三方备份，仅剥离本系统不认识的第三方标记字段后放行，
+    // 其余字段交给 importFullData 按原有语义导入（未知字段会被其忽略）。
     const record = input as Record<string, unknown>;
-    if (UNSUPPORTED_THIRD_PARTY_FIELDS.some(field => Object.prototype.hasOwnProperty.call(record, field))) {
-        trackEvent('拒绝导入第三方备份', { reason: 'third_party_field' });
-        throw new Error('不支持导入第三方系统备份，请选择由 SullyOS 导出的 ZIP 或 JSON 文件。');
+    for (const field of UNSUPPORTED_THIRD_PARTY_FIELDS) {
+        if (Object.prototype.hasOwnProperty.call(record, field)) {
+            trackEvent('放行第三方备份', { reason: 'third_party_field_stripped', field });
+            delete record[field];
+        }
     }
 }
