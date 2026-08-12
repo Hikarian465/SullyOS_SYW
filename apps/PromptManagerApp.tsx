@@ -107,7 +107,7 @@ export const PromptManagerApp: React.FC = () => {
                 <button
                     onClick={handleSave}
                     disabled={!isDirty}
-                    className={\`flex-[2] py-3 rounded-xl font-medium flex items-center justify-center gap-2 transition-colors \${isDirty ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-md shadow-blue-600/20' : 'bg-slate-100 text-slate-400 cursor-not-allowed'}\`}
+                    className={`flex-[2] py-3 rounded-xl font-medium flex items-center justify-center gap-2 transition-colors ${isDirty ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-md shadow-blue-600/20' : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}
                 >
                     <FloppyDisk size={20} />
                     {isDirty ? '保存修改' : '已保存'}
