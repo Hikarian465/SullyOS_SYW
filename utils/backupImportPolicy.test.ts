@@ -14,13 +14,16 @@ describe('backup import policy', () => {
     it.each([
         { vectorMemories: [] },
         { extraLocalStorageConfig: {} },
-    ])('rejects unsupported third-party backup markers before import', marker => {
-        expect(() => assertSupportedSullyBackup({
+    ])('strips third-party backup markers instead of rejecting (fork behavior)', marker => {
+        const input = {
             timestamp: Date.now(),
             version: 1,
             characters: [],
             ...marker,
-        })).toThrow('不支持导入第三方系统备份');
+        };
+        expect(() => assertSupportedSullyBackup(input)).not.toThrow();
+        const markerKey = Object.keys(marker)[0];
+        expect(Object.prototype.hasOwnProperty.call(input, markerKey)).toBe(false);
     });
 
     it('rejects non-object payloads', () => {
