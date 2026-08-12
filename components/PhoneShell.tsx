@@ -91,6 +91,7 @@ const HotNewsApp = lazyApp(() => import('../apps/HotNewsApp'));
 const VRWorldApp = lazyApp(() => import('../apps/VRWorldApp'));
 const WorldHomeApp = lazyApp(() => import('../apps/WorldHomeApp'));
 const CharCreatorDevApp = lazyApp(() => import('../apps/CharCreatorDevApp'));
+const PromptManagerApp = lazyApp(() => import('../apps/PromptManagerApp'));
 const SpecialMomentsApp = lazyApp(() => import('./ValentineEvent').then(m => ({ default: m.SpecialMomentsApp })));
 
 // 预取优先级：高频/常驻 App 先预热，其余随后；逐个在空闲时触发，避免与交互抢主线程/带宽。
@@ -100,7 +101,7 @@ const APP_PRELOAD_ORDER: PreloadableLazy[] = [
   StudyApp, GameApp, NovelApp, BankApp, WorldbookApp, MemoryPalaceApp, HandbookApp,
   VRWorldApp, WorldHomeApp, LifeSimApp, SongwritingApp, GuidebookApp, FAQApp, HotNewsApp,
   XhsStockApp, XhsFreeRoamApp, BrowserApp, VoiceDesignerApp, ThemeMaker, QQBridge,
-  SpecialMomentsApp, CharCreatorDevApp,
+  SpecialMomentsApp, CharCreatorDevApp, PromptManagerApp,
 ];
 
 const ROLE_ENTRY_PRELOAD_ORDER: PreloadableLazy[] = [
@@ -118,6 +119,7 @@ const APP_BY_ID: Partial<Record<AppID, PreloadableLazy>> = {
   [AppID.Journal]: JournalApp, [AppID.Schedule]: ScheduleApp, [AppID.Room]: RoomApp,
   [AppID.CheckPhone]: CheckPhone, [AppID.Social]: SocialApp, [AppID.Study]: StudyApp,
   [AppID.FAQ]: FAQApp, [AppID.Game]: GameApp, [AppID.Worldbook]: WorldbookApp,
+  [AppID.PromptManager]: PromptManagerApp,
   [AppID.Novel]: NovelApp, [AppID.Bank]: BankApp, [AppID.XhsStock]: XhsStockApp,
   [AppID.XhsFreeRoam]: XhsFreeRoamApp, [AppID.Browser]: BrowserApp, [AppID.Songwriting]: SongwritingApp,
   [AppID.Music]: MusicApp, [AppID.Call]: CallApp, [AppID.VoiceDesigner]: VoiceDesignerApp,
